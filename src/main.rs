@@ -1,8 +1,8 @@
 mod app;
 mod capture;
 mod decode;
-mod render;
 mod record;
+mod render;
 mod ui;
 
 use anyhow::Result;

@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use nokhwa::{
+    Camera,
     pixel_format::RgbAFormat,
     utils::{CameraIndex, RequestedFormat, RequestedFormatType, Resolution},
-    Camera,
 };
 use std::thread::{self, JoinHandle};
 
@@ -37,7 +37,10 @@ impl CaptureThread {
             .context("spawn capture thread")?;
 
         Ok((
-            CaptureThread { handle: Some(handle), stop_tx },
+            CaptureThread {
+                handle: Some(handle),
+                stop_tx,
+            },
             frame_rx,
         ))
     }

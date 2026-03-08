@@ -76,9 +76,17 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
 
             ui.horizontal(|ui| {
                 ui.label("Width:");
-                ui.add(egui::DragValue::new(&mut state.width).range(320..=3840).speed(8.0));
+                ui.add(
+                    egui::DragValue::new(&mut state.width)
+                        .range(320..=3840)
+                        .speed(8.0),
+                );
                 ui.label("Height:");
-                ui.add(egui::DragValue::new(&mut state.height).range(240..=2160).speed(8.0));
+                ui.add(
+                    egui::DragValue::new(&mut state.height)
+                        .range(240..=2160)
+                        .speed(8.0),
+                );
             });
 
             ui.horizontal(|ui| {

@@ -1,4 +1,3 @@
-
 use crossbeam_channel::Receiver;
 use std::sync::Arc;
 use winit::{
@@ -48,10 +47,14 @@ impl ApplicationHandler for App {
             .with_title("ShadowRust — Genki ShadowCast 2")
             .with_inner_size(winit::dpi::LogicalSize::new(1920u32, 1080u32));
 
-        let window = Arc::new(event_loop.create_window(window_attrs).expect("create window"));
+        let window = Arc::new(
+            event_loop
+                .create_window(window_attrs)
+                .expect("create window"),
+        );
 
-        let renderer = pollster::block_on(Renderer::new(Arc::clone(&window)))
-            .expect("init wgpu renderer");
+        let renderer =
+            pollster::block_on(Renderer::new(Arc::clone(&window))).expect("init wgpu renderer");
 
         self.state = Some(RunningState {
             window,
@@ -66,7 +69,9 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let Some(state) = self.state.as_mut() else { return };
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
 
         let consumed = state.renderer.handle_window_event(&event);
         if consumed {
@@ -131,19 +136,36 @@ impl ApplicationHandler for App {
 }
 
 pub enum UiAction {
-    StartCapture { device_index: usize, width: u32, height: u32, fps: u32 },
+    StartCapture {
+        device_index: usize,
+        width: u32,
+        height: u32,
+        fps: u32,
+    },
     StopCapture,
-    StartRecording { path: String },
+    StartRecording {
+        path: String,
+    },
     StopRecording,
 }
 
 fn handle_action(action: UiAction, state: &mut RunningState) {
     match action {
-        UiAction::StartCapture { device_index, width, height, fps } => {
+        UiAction::StartCapture {
+            device_index,
+            width,
+            height,
+            fps,
+        } => {
             if state.capture.is_some() {
                 return;
             }
-            let config = CaptureConfig { device_index, width, height, fps };
+            let config = CaptureConfig {
+                device_index,
+                width,
+                height,
+                fps,
+            };
             match CaptureThread::start(config) {
                 Ok((thread, rx)) => {
                     state.frame_size = (width, height);

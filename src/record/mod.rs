@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::{
-    codec, encoder, format, frame, software::scaling, util::rational::Rational,
-    Dictionary,
+    Dictionary, codec, encoder, format, frame, software::scaling, util::rational::Rational,
 };
 
 pub struct Recorder {

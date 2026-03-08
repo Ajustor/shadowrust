@@ -147,14 +147,8 @@ impl Renderer {
 
         let egui_renderer = egui_wgpu::Renderer::new(&device, surface_format, None, 1, false);
         let egui_ctx = egui::Context::default();
-        let egui_state = egui_winit::State::new(
-            egui_ctx,
-            egui::ViewportId::ROOT,
-            &window,
-            None,
-            None,
-            None,
-        );
+        let egui_state =
+            egui_winit::State::new(egui_ctx, egui::ViewportId::ROOT, &window, None, None, None);
 
         Ok(Self {
             surface,
@@ -189,7 +183,11 @@ impl Renderer {
             self.frame_size = size;
             let tex = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("video-frame"),
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -224,13 +222,19 @@ impl Renderer {
                     bytes_per_row: Some(4 * w),
                     rows_per_image: Some(h),
                 },
-                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
             );
         }
     }
 
     pub fn handle_window_event(&mut self, event: &WindowEvent) -> bool {
-        self.egui_state.on_window_event(&self.window, event).consumed
+        self.egui_state
+            .on_window_event(&self.window, event)
+            .consumed
     }
 
     pub fn render(&mut self, ui_state: &mut UiState) -> Vec<UiAction> {
@@ -248,7 +252,8 @@ impl Renderer {
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let egui_ctx = self.egui_state.egui_ctx().clone();
         let full_output = egui_ctx.run(raw_input, |ctx| crate::ui::draw(ctx, ui_state));
-        self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
+        self.egui_state
+            .handle_platform_output(&self.window, full_output.platform_output);
         let primitives = egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.config.width, self.config.height],
@@ -256,13 +261,16 @@ impl Renderer {
         };
 
         for (id, delta) in &full_output.textures_delta.set {
-            self.egui_renderer.update_texture(&self.device, &self.queue, *id, delta);
+            self.egui_renderer
+                .update_texture(&self.device, &self.queue, *id, delta);
         }
 
         // --- GPU: single encoder for the whole frame ---
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("frame-enc"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame-enc"),
+            });
 
         // Video pass
         {
@@ -310,18 +318,16 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
-            self.egui_renderer.render(
-                &mut rpass.forget_lifetime(),
-                &primitives,
-                &screen,
-            );
+            self.egui_renderer
+                .render(&mut rpass.forget_lifetime(), &primitives, &screen);
         }
 
         for id in &full_output.textures_delta.free {
             self.egui_renderer.free_texture(id);
         }
 
-        self.queue.submit(extra_cmds.into_iter().chain([encoder.finish()]));
+        self.queue
+            .submit(extra_cmds.into_iter().chain([encoder.finish()]));
         output.present();
 
         std::mem::take(&mut ui_state.pending_actions)
