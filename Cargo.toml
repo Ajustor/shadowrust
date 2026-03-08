@@ -24,6 +24,10 @@ egui-winit = "0.29"
 # UVC camera capture (v4l2 / AVFoundation / MediaFoundation)
 nokhwa = { version = "0.10", features = ["input-native", "output-threaded"] }
 
+# Audio capture + playback (UAC device → system output)
+cpal = "0.15"
+ringbuf = "0.3"
+
 # Video recording via FFmpeg
 ffmpeg-next = "7"
 

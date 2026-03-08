@@ -5,6 +5,7 @@
 )]
 
 mod app;
+mod audio;
 mod capture;
 mod decode;
 mod record;

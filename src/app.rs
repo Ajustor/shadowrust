@@ -8,6 +8,7 @@ use winit::{
 };
 
 use crate::{
+    audio::AudioPassthrough,
     capture::{CaptureConfig, CaptureThread},
     record::Recorder,
     render::Renderer,
@@ -25,6 +26,7 @@ struct RunningState {
     capture: Option<CaptureThread>,
     frame_rx: Option<Receiver<Vec<u8>>>,
     recorder: Option<Recorder>,
+    audio: Option<AudioPassthrough>,
     frame_size: (u32, u32),
 }
 
@@ -67,6 +69,7 @@ impl ApplicationHandler for App {
             capture: None,
             frame_rx: None,
             recorder: None,
+            audio: None,
             frame_size: (1920, 1080),
         };
 
@@ -88,6 +91,17 @@ impl ApplicationHandler for App {
                     state.capture = Some(thread);
                     self.ui_state.capturing = true;
                     self.ui_state.selected_device = 0;
+
+                    // Auto-start audio on the first available input device.
+                    // The capture card (e.g. Genki ShadowCast 2) registers as
+                    // both a UVC video device and a UAC audio device.
+                    match AudioPassthrough::start(None) {
+                        Ok(audio) => {
+                            state.audio = Some(audio);
+                            self.ui_state.audio_active = true;
+                        }
+                        Err(e) => log::warn!("Auto-start audio failed: {e}"),
+                    }
                 }
                 Err(e) => log::error!("Auto-start capture failed: {e}"),
             }
@@ -179,6 +193,11 @@ pub enum UiAction {
         path: String,
     },
     StopRecording,
+    StartAudio {
+        /// Substring to match against the audio input device name.
+        device_hint: String,
+    },
+    StopAudio,
 }
 
 fn handle_action(action: UiAction, state: &mut RunningState) {
@@ -212,6 +231,7 @@ fn handle_action(action: UiAction, state: &mut RunningState) {
         UiAction::StopCapture => {
             state.capture.take();
             state.frame_rx.take();
+            state.audio.take(); // stop audio alongside video
             log::info!("Capture stopped");
         }
 
@@ -234,6 +254,23 @@ fn handle_action(action: UiAction, state: &mut RunningState) {
                     log::info!("Recording saved");
                 }
             }
+        }
+
+        UiAction::StartAudio { device_hint } => {
+            let hint = if device_hint.is_empty() {
+                None
+            } else {
+                Some(device_hint.as_str())
+            };
+            match AudioPassthrough::start(hint) {
+                Ok(audio) => state.audio = Some(audio),
+                Err(e) => log::error!("Failed to start audio: {e}"),
+            }
+        }
+
+        UiAction::StopAudio => {
+            state.audio.take();
+            log::info!("Audio stopped");
         }
     }
 }
