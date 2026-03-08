@@ -67,6 +67,15 @@ impl ApplicationHandler for App {
                 .expect("create window"),
         );
 
+        // Set the window icon (title bar, taskbar, Alt+Tab).
+        // On Windows the EXE icon is embedded separately via winres in build.rs.
+        {
+            let rgba = crate::icon::make_icon_rgba(256);
+            if let Ok(icon) = winit::window::Icon::from_rgba(rgba, 256, 256) {
+                window.set_window_icon(Some(icon));
+            }
+        }
+
         let renderer =
             pollster::block_on(Renderer::new(Arc::clone(&window))).expect("init wgpu renderer");
 

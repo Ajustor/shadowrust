@@ -8,6 +8,7 @@ mod app;
 mod audio;
 mod capture;
 mod decode;
+mod icon;
 mod record;
 mod render;
 mod ui;
