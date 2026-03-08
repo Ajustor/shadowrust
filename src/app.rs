@@ -58,7 +58,7 @@ impl ApplicationHandler for App {
         }
 
         let window_attrs = Window::default_attributes()
-            .with_title("ShadowRust — Genki ShadowCast 2")
+            .with_title("ShadowRust")
             .with_inner_size(winit::dpi::LogicalSize::new(1920u32, 1080u32));
 
         let window = Arc::new(
@@ -140,10 +140,7 @@ impl ApplicationHandler for App {
 
         // ── Intercept critical keys BEFORE egui so they can never be consumed
         // by egui's keyboard-focus logic (e.g. when a text field has focus).
-        if let WindowEvent::KeyboardInput {
-            event: ref key, ..
-        } = event
-        {
+        if let WindowEvent::KeyboardInput { event: ref key, .. } = event {
             use winit::keyboard::{KeyCode, PhysicalKey};
             if key.state == winit::event::ElementState::Pressed {
                 match key.physical_key {
@@ -200,8 +197,7 @@ impl ApplicationHandler for App {
                         state.capture_frame_count += 1;
                         let elapsed = state.capture_fps_since.elapsed().as_secs_f32();
                         if elapsed >= 0.5 {
-                            self.ui_state.fps_display =
-                                state.capture_frame_count as f32 / elapsed;
+                            self.ui_state.fps_display = state.capture_frame_count as f32 / elapsed;
                             state.capture_frame_count = 0;
                             state.capture_fps_since = Instant::now();
                         }
