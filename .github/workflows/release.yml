@@ -65,31 +65,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: brew install ffmpeg@7 llvm pkg-config
+      - name: Install FFmpeg 7 and LLVM
+        run: |
+          brew install ffmpeg@7 llvm pkg-config
+          # Remove any FFmpeg 8.x symlinks from /opt/homebrew/{bin,include,lib}
+          # so clang/bindgen cannot accidentally find FFmpeg 8.x headers.
+          brew unlink ffmpeg 2>/dev/null || true
+          brew link --force ffmpeg@7
 
       - name: Set FFmpeg & LLVM environment (macOS)
         run: |
           FFMPEG_PREFIX="$(brew --prefix ffmpeg@7)"
           LLVM_PREFIX="$(brew --prefix llvm)"
 
-          # Get ffmpeg@7 actual version for a stable cache key
-          FFMPEG_VERSION="$(pkg-config --modversion libavcodec 2>/dev/null || echo 'unknown')"
+          echo "FFMPEG_DIR=${FFMPEG_PREFIX}"                            >> $GITHUB_ENV
+          echo "FFMPEG_INCLUDE_DIR=${FFMPEG_PREFIX}/include"            >> $GITHUB_ENV
+          echo "FFMPEG_LIB_DIR=${FFMPEG_PREFIX}/lib"                    >> $GITHUB_ENV
+          # Disable pkg-config entirely so only our explicit dirs are used.
+          echo "FFMPEG_NO_PKG_CONFIG=1"                                 >> $GITHUB_ENV
+          echo "LIBCLANG_PATH=${LLVM_PREFIX}/lib"                       >> $GITHUB_ENV
+          # Tell bindgen/clang to prefer ffmpeg@7 headers (now also linked
+          # at /opt/homebrew/include via brew link --force above).
+          echo "BINDGEN_EXTRA_CLANG_ARGS=-I${FFMPEG_PREFIX}/include"    >> $GITHUB_ENV
+          # Prepend LLVM bin so 'clang' resolves to Homebrew LLVM, not Xcode.
+          echo "${LLVM_PREFIX}/bin"                                      >> $GITHUB_PATH
 
-          echo "FFMPEG_DIR=${FFMPEG_PREFIX}"                     >> $GITHUB_ENV
-          echo "FFMPEG_INCLUDE_DIR=${FFMPEG_PREFIX}/include"     >> $GITHUB_ENV
-          echo "FFMPEG_LIB_DIR=${FFMPEG_PREFIX}/lib"             >> $GITHUB_ENV
-          # Disable pkg-config so the system FFmpeg (8.x) cannot shadow our paths.
-          echo "FFMPEG_NO_PKG_CONFIG=1"                          >> $GITHUB_ENV
-          echo "LIBCLANG_PATH=${LLVM_PREFIX}/lib"                >> $GITHUB_ENV
-          # Force bindgen/clang to use ffmpeg@7 headers, not system FFmpeg 8.x
-          echo "BINDGEN_EXTRA_CLANG_ARGS=-I${FFMPEG_PREFIX}/include" >> $GITHUB_ENV
-          # Prepend LLVM bin so 'clang' resolves to Homebrew LLVM, not Xcode
-          echo "${LLVM_PREFIX}/bin"                              >> $GITHUB_PATH
-          # Export version for cache key
-          echo "FFMPEG_VERSION=${FFMPEG_VERSION}"                >> $GITHUB_ENV
-
-          # avfft.h was removed in FFmpeg 7.0 but ffmpeg-sys-next still tries to bind it.
+          # avfft.h was removed in FFmpeg 7; ffmpeg-sys-next still binds it.
           AVFFT="${FFMPEG_PREFIX}/include/libavcodec/avfft.h"
           [ -f "$AVFFT" ] || printf '#ifndef AVCODEC_AVFFT_H\n#define AVCODEC_AVFFT_H\n#endif\n' > "$AVFFT"
 
@@ -99,7 +100,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: ffmpeg7-${{ env.FFMPEG_VERSION }}-v2
+          # Bump suffix to bust any stale bindgen cache that used wrong headers.
+          key: macos-ffmpeg7-v3
 
       - name: Build release
         run: cargo build --release

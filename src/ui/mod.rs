@@ -386,6 +386,9 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
             ui.separator();
             ui.label(format!("Frames dropped: {}", state.frames_dropped));
             ui.separator();
-            ui.small("Tab: toggle panel  |  F11: Fullscreen  |  Esc: Quit");
+            ui.small(format!(
+                "Tab: toggle panel  |  F11: Fullscreen  |  Esc: Quit | Version: {}",
+                env!("CARGO_PKG_VERSION")
+            ));
         });
 }
