@@ -18,21 +18,6 @@ pub struct UiState {
 }
 
 impl UiState {
-    fn ensure_defaults(&mut self) {
-        if self.width == 0 {
-            self.width = 1920;
-        }
-        if self.height == 0 {
-            self.height = 1080;
-        }
-        if self.fps == 0 {
-            self.fps = 60;
-        }
-        if self.record_path.is_empty() {
-            self.record_path = "capture.mp4".to_string();
-        }
-    }
-
     fn load_devices(&mut self) {
         if !self.devices_loaded {
             self.devices = list_devices();
@@ -42,7 +27,6 @@ impl UiState {
 }
 
 pub fn draw(ctx: &egui::Context, state: &mut UiState) {
-    state.ensure_defaults();
     state.load_devices();
 
     egui::Window::new("ShadowRust")
@@ -53,22 +37,29 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
 
             // Device selector
             let devices = state.devices.clone();
-            let selected = state.selected_device;
-            let label = devices
-                .get(selected)
-                .cloned()
-                .unwrap_or_else(|| "No device found".to_string());
+            if devices.is_empty() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 180, 0),
+                    "⚠ No capture device detected",
+                );
+                if ui.button("🔄 Scan devices").clicked() {
+                    state.devices_loaded = false;
+                }
+            } else {
+                let selected = state.selected_device;
+                let label = devices.get(selected).cloned().unwrap_or_default();
 
-            egui::ComboBox::from_label("Device")
-                .selected_text(&label)
-                .show_ui(ui, |ui| {
-                    for (i, name) in devices.iter().enumerate() {
-                        ui.selectable_value(&mut state.selected_device, i, name);
-                    }
-                });
+                egui::ComboBox::from_label("Device")
+                    .selected_text(&label)
+                    .show_ui(ui, |ui| {
+                        for (i, name) in devices.iter().enumerate() {
+                            ui.selectable_value(&mut state.selected_device, i, name);
+                        }
+                    });
 
-            if ui.button("🔄 Refresh devices").clicked() {
-                state.devices_loaded = false;
+                if ui.button("🔄 Refresh devices").clicked() {
+                    state.devices_loaded = false;
+                }
             }
 
             ui.separator();

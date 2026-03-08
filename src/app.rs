@@ -30,9 +30,14 @@ struct RunningState {
 
 impl App {
     pub fn new() -> Self {
+        let mut ui_state = UiState::default();
+        ui_state.width = 1920;
+        ui_state.height = 1080;
+        ui_state.fps = 60;
+        ui_state.record_path = "capture.mp4".to_string();
         Self {
             state: None,
-            ui_state: UiState::default(),
+            ui_state,
         }
     }
 }
@@ -56,14 +61,41 @@ impl ApplicationHandler for App {
         let renderer =
             pollster::block_on(Renderer::new(Arc::clone(&window))).expect("init wgpu renderer");
 
-        self.state = Some(RunningState {
+        let mut state = RunningState {
             window,
             renderer,
             capture: None,
             frame_rx: None,
             recorder: None,
             frame_size: (1920, 1080),
-        });
+        };
+
+        // Auto-start capture on first available device, like Genki Arcade does.
+        let (w, h, fps) = (self.ui_state.width, self.ui_state.height, self.ui_state.fps);
+        let devices = crate::capture::list_devices();
+        if !devices.is_empty() {
+            log::info!("Auto-starting capture on device 0: {}", devices[0]);
+            let config = CaptureConfig {
+                device_index: 0,
+                width: w,
+                height: h,
+                fps,
+            };
+            match CaptureThread::start(config) {
+                Ok((thread, rx)) => {
+                    state.frame_size = (w, h);
+                    state.frame_rx = Some(rx);
+                    state.capture = Some(thread);
+                    self.ui_state.capturing = true;
+                    self.ui_state.selected_device = 0;
+                }
+                Err(e) => log::error!("Auto-start capture failed: {e}"),
+            }
+        } else {
+            log::warn!("No capture device found — use the UI to scan and start manually");
+        }
+
+        self.state = Some(state);
 
         log::info!("Window and renderer initialised");
     }

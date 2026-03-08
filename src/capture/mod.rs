@@ -61,10 +61,14 @@ fn capture_loop(
     stop_rx: Receiver<()>,
 ) -> Result<()> {
     let index = CameraIndex::Index(config.device_index as u32);
+    // Request MJPEG — the format used by virtually all UVC capture cards
+    // (Genki ShadowCast 2, Elgato, etc.). nokhwa will decode to RGBA via
+    // decode_image::<RgbAFormat>(). Closest() picks the nearest supported
+    // resolution/fps if the requested one is unavailable.
     let format = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::Closest(
         nokhwa::utils::CameraFormat::new(
             Resolution::new(config.width, config.height),
-            nokhwa::utils::FrameFormat::RAWRGB,
+            nokhwa::utils::FrameFormat::MJPEG,
             config.fps,
         ),
     ));
