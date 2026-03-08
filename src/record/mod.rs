@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use bytemuck::cast_slice_mut;
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::{
-    Dictionary, channel_layout::ChannelLayout, codec, encoder, format, frame,
-    software::scaling, util::rational::Rational,
+    Dictionary, channel_layout::ChannelLayout, codec, encoder, format, frame, software::scaling,
+    util::rational::Rational,
 };
 
 pub struct Recorder {
@@ -40,8 +40,7 @@ impl Recorder {
         let mut octx = format::output(path).context("open output file")?;
 
         // ── Video stream ──────────────────────────────────────────────────────
-        let video_codec =
-            encoder::find(codec::Id::H264).context("find H.264 encoder")?;
+        let video_codec = encoder::find(codec::Id::H264).context("find H.264 encoder")?;
         let video_time_base = Rational::new(1, fps as i32);
 
         let mut venc_ctx = codec::Context::new_with_codec(video_codec)
@@ -79,49 +78,47 @@ impl Recorder {
         .context("create scaler")?;
 
         // ── Audio stream (AAC) ────────────────────────────────────────────────
-        let (audio_enc, audio_stream_idx, audio_frame_size) =
-            match encoder::find(codec::Id::AAC) {
-                Some(audio_codec) => {
-                    let mut aenc_ctx = codec::Context::new_with_codec(audio_codec)
-                        .encoder()
-                        .audio()
-                        .context("create audio encoder ctx")?;
+        let (audio_enc, audio_stream_idx, audio_frame_size) = match encoder::find(codec::Id::AAC) {
+            Some(audio_codec) => {
+                let mut aenc_ctx = codec::Context::new_with_codec(audio_codec)
+                    .encoder()
+                    .audio()
+                    .context("create audio encoder ctx")?;
 
-                    let layout = if audio_channels >= 2 {
-                        ChannelLayout::STEREO
-                    } else {
-                        ChannelLayout::MONO
-                    };
-                    aenc_ctx.set_rate(audio_sample_rate as i32);
-                    aenc_ctx.set_channel_layout(layout);
-                    aenc_ctx.set_format(ffmpeg_next::util::format::Sample::F32(
-                        ffmpeg_next::util::format::sample::Type::Planar,
-                    ));
-                    aenc_ctx.set_bit_rate(128_000);
-                    aenc_ctx.set_time_base(Rational::new(1, audio_sample_rate as i32));
+                let layout = if audio_channels >= 2 {
+                    ChannelLayout::STEREO
+                } else {
+                    ChannelLayout::MONO
+                };
+                aenc_ctx.set_rate(audio_sample_rate as i32);
+                aenc_ctx.set_channel_layout(layout);
+                aenc_ctx.set_format(ffmpeg_next::util::format::Sample::F32(
+                    ffmpeg_next::util::format::sample::Type::Planar,
+                ));
+                aenc_ctx.set_bit_rate(128_000);
+                aenc_ctx.set_time_base(Rational::new(1, audio_sample_rate as i32));
 
-                    let audio_enc = aenc_ctx.open().context("open AAC encoder")?;
-                    let frame_size = (audio_enc.frame_size() as usize).max(1024);
+                let audio_enc = aenc_ctx.open().context("open AAC encoder")?;
+                let frame_size = (audio_enc.frame_size() as usize).max(1024);
 
-                    {
-                        let mut ast =
-                            octx.add_stream(audio_codec).context("add audio stream")?;
-                        ast.set_parameters(&audio_enc);
-                    }
-                    let audio_stream_idx = 1usize; // audio is second stream
-
-                    log::info!(
-                        "Audio recording: AAC {}ch @ {}Hz, frame_size={frame_size}",
-                        audio_channels,
-                        audio_sample_rate
-                    );
-                    (Some(audio_enc), audio_stream_idx, frame_size)
+                {
+                    let mut ast = octx.add_stream(audio_codec).context("add audio stream")?;
+                    ast.set_parameters(&audio_enc);
                 }
-                None => {
-                    log::warn!("AAC encoder not found — recording without audio");
-                    (None, usize::MAX, 1024)
-                }
-            };
+                let audio_stream_idx = 1usize; // audio is second stream
+
+                log::info!(
+                    "Audio recording: AAC {}ch @ {}Hz, frame_size={frame_size}",
+                    audio_channels,
+                    audio_sample_rate
+                );
+                (Some(audio_enc), audio_stream_idx, frame_size)
+            }
+            None => {
+                log::warn!("AAC encoder not found — recording without audio");
+                (None, usize::MAX, 1024)
+            }
+        };
 
         octx.write_header().context("write file header")?;
 

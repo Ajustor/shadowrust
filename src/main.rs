@@ -9,6 +9,7 @@ mod audio;
 mod capture;
 mod decode;
 mod icon;
+mod power;
 mod record;
 mod render;
 mod ui;

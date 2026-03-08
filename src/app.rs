@@ -11,6 +11,7 @@ use winit::{
 use crate::{
     audio::AudioPassthrough,
     capture::{CaptureConfig, CaptureThread, DeviceResolution},
+    power::SleepInhibitor,
     record::Recorder,
     render::Renderer,
     ui::UiState,
@@ -33,6 +34,8 @@ struct RunningState {
     // FPS measured from actual capture frames (not the render loop)
     capture_frame_count: u32,
     capture_fps_since: Instant,
+    // Prevents OS sleep/screensaver while the app is running
+    _sleep_inhibitor: SleepInhibitor,
 }
 
 impl App {
@@ -90,6 +93,7 @@ impl ApplicationHandler for App {
             resolution_query_rx: None,
             capture_frame_count: 0,
             capture_fps_since: Instant::now(),
+            _sleep_inhibitor: SleepInhibitor::new(),
         };
 
         // Auto-start capture on first available device, like Genki Arcade does.
