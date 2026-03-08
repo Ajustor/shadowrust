@@ -401,10 +401,30 @@ fn handle_action(action: UiAction, state: &mut RunningState, ui_state: &mut UiSt
                 .as_ref()
                 .map(|a| (a.sample_rate, a.channels))
                 .unwrap_or((48000, 2));
-            match Recorder::new(&path, w, h, 60, rate, ch) {
+
+            // Flush any audio samples that accumulated BEFORE recording started.
+            // If we don't discard these, they get encoded with PTS=0 while the
+            // first video frame also has PTS=0, pushing audio ahead of video.
+            if let Some(audio) = &state.audio {
+                let _ = audio.drain_recording_samples();
+            }
+
+            // Use the measured capture FPS (the real hardware rate), falling back
+            // to the UI-configured fps. Using a wrong fps makes video play at the
+            // wrong speed relative to audio.
+            let actual_fps = if ui_state.fps_display > 1.0 {
+                ui_state.fps_display.round() as u32
+            } else {
+                ui_state.fps
+            }
+            .max(1);
+
+            match Recorder::new(&path, w, h, actual_fps, rate, ch) {
                 Ok(rec) => {
                     state.recorder = Some(rec);
-                    log::info!("Recording → {path} (audio {ch}ch @ {rate}Hz)");
+                    log::info!(
+                        "Recording → {path} ({w}x{h}@{actual_fps}fps, audio {ch}ch @ {rate}Hz)"
+                    );
                 }
                 Err(e) => log::error!("Failed to start recording: {e}"),
             }
