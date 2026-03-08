@@ -105,19 +105,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LLVM (for bindgen)
-        run: choco install llvm --no-progress -y
-
       - name: Download pre-built ffmpeg (Windows)
         shell: pwsh
         run: |
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip"
-          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip -UseBasicParsing
-          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-win -Force
-          $ffmpegDir = (Get-ChildItem -Path ffmpeg-win -Directory | Select-Object -First 1).FullName
-          Write-Host "FFMPEG_DIR set to: $ffmpegDir"
-          "FFMPEG_DIR=$ffmpegDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "LIBCLANG_PATH=C:\Program Files\LLVM\lib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $ProgressPreference = 'SilentlyContinue'
+          $zip  = "$env:RUNNER_TEMP\ffmpeg.zip"
+          $dest = "$env:RUNNER_TEMP\ffmpeg-extract"
+          $ffmpegDir = "$env:RUNNER_TEMP\ffmpeg"
+
+          Invoke-WebRequest `
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip" `
+            -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          $inner = (Get-ChildItem -Path $dest -Directory | Select-Object -First 1).FullName
+          Move-Item $inner $ffmpegDir
+
+          # LLVM/libclang is pre-installed on windows-latest at C:\Program Files\LLVM
+          # libclang.dll lives in bin\, not lib\
+          "FFMPEG_DIR=$ffmpegDir"                     >> $env:GITHUB_ENV
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin"   >> $env:GITHUB_ENV
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -128,15 +134,19 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build release
+        shell: pwsh
         run: cargo build --release
 
       - name: Bundle ffmpeg DLLs
-        run: |
-          Copy-Item "$env:FFMPEG_DIR\bin\*.dll" target\release\
+        shell: pwsh
+        run: Copy-Item "$env:FFMPEG_DIR\bin\*.dll" target\release\
 
       - name: Package release
+        shell: pwsh
         run: |
-          Compress-Archive -Path target\release\shadowrust.exe, target\release\*.dll -DestinationPath shadowrust-windows-x86_64.zip
+          Compress-Archive `
+            -Path target\release\shadowrust.exe, target\release\*.dll `
+            -DestinationPath shadowrust-windows-x86_64.zip
 
       - uses: actions/upload-artifact@v4
         with:
