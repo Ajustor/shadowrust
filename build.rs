@@ -19,7 +19,9 @@ fn bundle_ffmpeg_dlls(out_path: &Path) {
     let ffmpeg_dir = std::env::var("FFMPEG_DIR").unwrap_or_default();
 
     if ffmpeg_dir.is_empty() {
-        eprintln!("cargo:warning=FFMPEG_DIR not set — FFmpeg DLLs will NOT be embedded. Make sure they are on PATH at runtime.");
+        eprintln!(
+            "cargo:warning=FFMPEG_DIR not set — FFmpeg DLLs will NOT be embedded. Make sure they are on PATH at runtime."
+        );
         write_empty_bundle(out_path);
         return;
     }
@@ -28,9 +30,7 @@ fn bundle_ffmpeg_dlls(out_path: &Path) {
     let dlls = find_ffmpeg_dlls(&bin_dir);
 
     if dlls.is_empty() {
-        eprintln!(
-            "cargo:warning=No FFmpeg DLLs found in {bin_dir:?} — they will not be embedded."
-        );
+        eprintln!("cargo:warning=No FFmpeg DLLs found in {bin_dir:?} — they will not be embedded.");
         write_empty_bundle(out_path);
         return;
     }
@@ -59,8 +59,7 @@ fn bundle_ffmpeg_dlls(out_path: &Path) {
     }
     code += "];\n";
 
-    std::fs::write(out_path.join("dlls.rs"), code)
-        .expect("write dlls.rs");
+    std::fs::write(out_path.join("dlls.rs"), code).expect("write dlls.rs");
 
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
     println!("cargo:rerun-if-changed={}", bin_dir.display());

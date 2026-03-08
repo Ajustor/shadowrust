@@ -28,10 +28,7 @@ impl AudioPassthrough {
         let output_device = host
             .default_output_device()
             .context("no audio output device")?;
-        log::info!(
-            "Audio output: {}",
-            output_device.name().unwrap_or_default()
-        );
+        log::info!("Audio output: {}", output_device.name().unwrap_or_default());
 
         // Use the input's native config (sample rate, channels) to avoid
         // any resampling on the capture path.

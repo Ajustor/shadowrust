@@ -92,7 +92,12 @@ impl ApplicationHandler for App {
             // has real format data as soon as possible.
             state.resolution_query_rx = Some(spawn_resolution_query(0));
 
-            let config = CaptureConfig { device_index: 0, width: w, height: h, fps };
+            let config = CaptureConfig {
+                device_index: 0,
+                width: w,
+                height: h,
+                fps,
+            };
             match CaptureThread::start(config) {
                 Ok((thread, rx)) => {
                     state.frame_size = (w, h);
@@ -230,20 +235,36 @@ pub enum UiAction {
         fps: u32,
     },
     StopCapture,
-    StartRecording { path: String },
+    StartRecording {
+        path: String,
+    },
     StopRecording,
-    StartAudio { device_hint: String },
+    StartAudio {
+        device_hint: String,
+    },
     StopAudio,
-    QueryDeviceResolutions { device_index: usize },
+    QueryDeviceResolutions {
+        device_index: usize,
+    },
 }
 
 fn handle_action(action: UiAction, state: &mut RunningState) {
     match action {
-        UiAction::StartCapture { device_index, width, height, fps } => {
+        UiAction::StartCapture {
+            device_index,
+            width,
+            height,
+            fps,
+        } => {
             if state.capture.is_some() {
                 return;
             }
-            let config = CaptureConfig { device_index, width, height, fps };
+            let config = CaptureConfig {
+                device_index,
+                width,
+                height,
+                fps,
+            };
             match CaptureThread::start(config) {
                 Ok((thread, rx)) => {
                     state.frame_size = (width, height);
@@ -284,7 +305,11 @@ fn handle_action(action: UiAction, state: &mut RunningState) {
         }
 
         UiAction::StartAudio { device_hint } => {
-            let hint = if device_hint.is_empty() { None } else { Some(device_hint.as_str()) };
+            let hint = if device_hint.is_empty() {
+                None
+            } else {
+                Some(device_hint.as_str())
+            };
             match AudioPassthrough::start(hint) {
                 Ok(audio) => state.audio = Some(audio),
                 Err(e) => log::error!("Failed to start audio: {e}"),

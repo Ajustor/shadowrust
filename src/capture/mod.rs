@@ -167,7 +167,12 @@ pub fn query_device_resolutions(device_index: usize) -> Vec<DeviceResolution> {
         .into_iter()
         .map(|((w, h), max_fps)| {
             let label = format!("{w}×{h} @ {max_fps} fps");
-            DeviceResolution { width: w, height: h, max_fps, label }
+            DeviceResolution {
+                width: w,
+                height: h,
+                max_fps,
+                label,
+            }
         })
         .collect();
 

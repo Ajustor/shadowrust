@@ -13,7 +13,7 @@ pub struct UiState {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
-    pub fps_display: f32,       // updated every frame by app.rs
+    pub fps_display: f32, // updated every frame by app.rs
     pub record_path: String,
     pub latency_ms: f32,
     pub frames_dropped: u64,
@@ -80,7 +80,11 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
         .resizable(false)
         .movable(false)
         .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
-        .frame(egui::Frame::none().fill(egui::Color32::from_black_alpha(140)).inner_margin(6.0))
+        .frame(
+            egui::Frame::none()
+                .fill(egui::Color32::from_black_alpha(140))
+                .inner_margin(6.0),
+        )
         .show(ctx, |ui| {
             ui.colored_label(
                 egui::Color32::from_rgb(180, 255, 180),
@@ -112,7 +116,11 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                     state.devices_loaded = false;
                 }
             } else {
-                let label = state.devices.get(state.selected_device).cloned().unwrap_or_default();
+                let label = state
+                    .devices
+                    .get(state.selected_device)
+                    .cloned()
+                    .unwrap_or_default();
                 let prev = state.selected_device;
 
                 egui::ComboBox::from_id_salt("video-device")
@@ -126,9 +134,11 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                 // When device changes, query its resolutions.
                 if state.selected_device != prev {
                     state.device_resolutions.clear();
-                    state.pending_actions.push(UiAction::QueryDeviceResolutions {
-                        device_index: state.selected_device,
-                    });
+                    state
+                        .pending_actions
+                        .push(UiAction::QueryDeviceResolutions {
+                            device_index: state.selected_device,
+                        });
                 }
 
                 if ui.button("🔄 Refresh").clicked() {
@@ -174,10 +184,16 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                         .get(state.selected_audio_device)
                         .cloned()
                         .unwrap_or_default();
-                    state.pending_actions.push(UiAction::StartAudio { device_hint: hint });
+                    state
+                        .pending_actions
+                        .push(UiAction::StartAudio { device_hint: hint });
                     state.audio_active = true;
                 }
-                if ui.button("🔄").on_hover_text("Refresh audio devices").clicked() {
+                if ui
+                    .button("🔄")
+                    .on_hover_text("Refresh audio devices")
+                    .clicked()
+                {
                     state.audio_devices_loaded = false;
                 }
             });
@@ -217,7 +233,10 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                         }
                         // Custom entry at the bottom.
                         ui.separator();
-                        if ui.selectable_label(state.custom_resolution, "Custom").clicked() {
+                        if ui
+                            .selectable_label(state.custom_resolution, "Custom")
+                            .clicked()
+                        {
                             state.custom_resolution = true;
                         }
                     });
@@ -233,17 +252,16 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                 let preset_label = if state.custom_resolution {
                     "Custom"
                 } else {
-                    PRESETS.get(*preset_idx_ref).map(|(l, _, _, _)| *l).unwrap_or("1080p FHD")
+                    PRESETS
+                        .get(*preset_idx_ref)
+                        .map(|(l, _, _, _)| *l)
+                        .unwrap_or("1080p FHD")
                 };
                 egui::ComboBox::from_label("Resolution")
                     .selected_text(preset_label)
                     .show_ui(ui, |ui| {
                         for (i, (label, w, h, fps)) in PRESETS.iter().enumerate() {
-                            if ui
-                                .selectable_value(preset_idx_ref, i, *label)
-                                .clicked()
-                                && *w != 0
-                            {
+                            if ui.selectable_value(preset_idx_ref, i, *label).clicked() && *w != 0 {
                                 state.width = *w;
                                 state.height = *h;
                                 state.fps = *fps;
@@ -260,9 +278,17 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
             if state.custom_resolution {
                 ui.horizontal(|ui| {
                     ui.label("Width:");
-                    ui.add(egui::DragValue::new(&mut state.width).range(320..=3840).speed(8.0));
+                    ui.add(
+                        egui::DragValue::new(&mut state.width)
+                            .range(320..=3840)
+                            .speed(8.0),
+                    );
                     ui.label("Height:");
-                    ui.add(egui::DragValue::new(&mut state.height).range(240..=2160).speed(8.0));
+                    ui.add(
+                        egui::DragValue::new(&mut state.height)
+                            .range(240..=2160)
+                            .speed(8.0),
+                    );
                 });
             }
 
