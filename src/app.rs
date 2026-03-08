@@ -43,6 +43,7 @@ impl App {
         ui_state.height = 1080;
         ui_state.fps = 60;
         ui_state.record_path = "capture.mp4".to_string();
+        ui_state.menu_visible = true; // visible by default; Tab hides/shows it
         Self {
             state: None,
             ui_state,
@@ -152,10 +153,6 @@ impl ApplicationHandler for App {
                             } else {
                                 Some(winit::window::Fullscreen::Borderless(None))
                             });
-                        }
-                        // Tab toggles the settings panel visibility.
-                        PhysicalKey::Code(KeyCode::Tab) => {
-                            self.ui_state.menu_visible = !self.ui_state.menu_visible;
                         }
                         _ => {}
                     }

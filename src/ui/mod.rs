@@ -71,6 +71,12 @@ impl UiState {
 }
 
 pub fn draw(ctx: &egui::Context, state: &mut UiState) {
+    // Tab is consumed by egui for focus navigation, so we must handle it here
+    // inside the egui context rather than relying on the winit keyboard event.
+    if ctx.input(|i| i.key_pressed(egui::Key::Tab)) {
+        state.menu_visible = !state.menu_visible;
+    }
+
     state.load_video_devices();
     state.load_audio_devices();
 
