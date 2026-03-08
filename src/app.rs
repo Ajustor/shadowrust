@@ -1,5 +1,6 @@
 use crossbeam_channel::Receiver;
 use std::sync::Arc;
+use std::time::Instant;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -9,7 +10,7 @@ use winit::{
 
 use crate::{
     audio::AudioPassthrough,
-    capture::{CaptureConfig, CaptureThread},
+    capture::{CaptureConfig, CaptureThread, DeviceResolution},
     record::Recorder,
     render::Renderer,
     ui::UiState,
@@ -28,6 +29,11 @@ struct RunningState {
     recorder: Option<Recorder>,
     audio: Option<AudioPassthrough>,
     frame_size: (u32, u32),
+    // Resolution query result channel (populated by a background thread).
+    resolution_query_rx: Option<Receiver<Vec<DeviceResolution>>>,
+    // FPS tracking
+    last_frame: Instant,
+    fps: f32,
 }
 
 impl App {
@@ -71,6 +77,9 @@ impl ApplicationHandler for App {
             recorder: None,
             audio: None,
             frame_size: (1920, 1080),
+            resolution_query_rx: None,
+            last_frame: Instant::now(),
+            fps: 0.0,
         };
 
         // Auto-start capture on first available device, like Genki Arcade does.
@@ -78,12 +87,12 @@ impl ApplicationHandler for App {
         let devices = crate::capture::list_devices();
         if !devices.is_empty() {
             log::info!("Auto-starting capture on device 0: {}", devices[0]);
-            let config = CaptureConfig {
-                device_index: 0,
-                width: w,
-                height: h,
-                fps,
-            };
+
+            // Kick off a background resolution query immediately so the UI
+            // has real format data as soon as possible.
+            state.resolution_query_rx = Some(spawn_resolution_query(0));
+
+            let config = CaptureConfig { device_index: 0, width: w, height: h, fps };
             match CaptureThread::start(config) {
                 Ok((thread, rx)) => {
                     state.frame_size = (w, h);
@@ -92,9 +101,6 @@ impl ApplicationHandler for App {
                     self.ui_state.capturing = true;
                     self.ui_state.selected_device = 0;
 
-                    // Auto-start audio on the first available input device.
-                    // The capture card (e.g. Genki ShadowCast 2) registers as
-                    // both a UVC video device and a UAC audio device.
                     match AudioPassthrough::start(None) {
                         Ok(audio) => {
                             state.audio = Some(audio);
@@ -110,7 +116,6 @@ impl ApplicationHandler for App {
         }
 
         self.state = Some(state);
-
         log::info!("Window and renderer initialised");
     }
 
@@ -143,6 +148,10 @@ impl ApplicationHandler for App {
                                 Some(winit::window::Fullscreen::Borderless(None))
                             });
                         }
+                        // Tab toggles the settings panel visibility.
+                        PhysicalKey::Code(KeyCode::Tab) => {
+                            self.ui_state.menu_visible = !self.ui_state.menu_visible;
+                        }
                         _ => {}
                     }
                 }
@@ -153,7 +162,25 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::RedrawRequested => {
-                // Drain capture channel to latest frame only
+                // ── FPS counter (exponential moving average) ──────────────────
+                let now = Instant::now();
+                let dt = now.duration_since(state.last_frame).as_secs_f32();
+                state.last_frame = now;
+                if dt > 0.0 {
+                    let instant_fps = 1.0 / dt;
+                    state.fps = state.fps * 0.9 + instant_fps * 0.1;
+                }
+                self.ui_state.fps_display = state.fps;
+
+                // ── Background resolution query result ────────────────────────
+                if let Some(rx) = &state.resolution_query_rx {
+                    if let Ok(resolutions) = rx.try_recv() {
+                        self.ui_state.set_device_resolutions(resolutions);
+                        state.resolution_query_rx = None;
+                    }
+                }
+
+                // ── Video frame ───────────────────────────────────────────────
                 if let Some(rx) = &state.frame_rx {
                     let mut latest = None;
                     while let Ok(frame) = rx.try_recv() {
@@ -167,7 +194,7 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Render + collect UI actions (no self borrow conflict: handle_action is a free fn)
+                // ── Render + process UI actions ───────────────────────────────
                 let actions = state.renderer.render(&mut self.ui_state);
                 for action in actions {
                     handle_action(action, state);
@@ -181,6 +208,20 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Spawn a thread to query the camera's supported resolutions without
+/// blocking the render loop. The result arrives on the returned channel.
+fn spawn_resolution_query(device_index: usize) -> Receiver<Vec<DeviceResolution>> {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    std::thread::Builder::new()
+        .name("shadowrust-format-query".into())
+        .spawn(move || {
+            let resolutions = crate::capture::query_device_resolutions(device_index);
+            let _ = tx.send(resolutions);
+        })
+        .ok();
+    rx
+}
+
 pub enum UiAction {
     StartCapture {
         device_index: usize,
@@ -189,34 +230,20 @@ pub enum UiAction {
         fps: u32,
     },
     StopCapture,
-    StartRecording {
-        path: String,
-    },
+    StartRecording { path: String },
     StopRecording,
-    StartAudio {
-        /// Substring to match against the audio input device name.
-        device_hint: String,
-    },
+    StartAudio { device_hint: String },
     StopAudio,
+    QueryDeviceResolutions { device_index: usize },
 }
 
 fn handle_action(action: UiAction, state: &mut RunningState) {
     match action {
-        UiAction::StartCapture {
-            device_index,
-            width,
-            height,
-            fps,
-        } => {
+        UiAction::StartCapture { device_index, width, height, fps } => {
             if state.capture.is_some() {
                 return;
             }
-            let config = CaptureConfig {
-                device_index,
-                width,
-                height,
-                fps,
-            };
+            let config = CaptureConfig { device_index, width, height, fps };
             match CaptureThread::start(config) {
                 Ok((thread, rx)) => {
                     state.frame_size = (width, height);
@@ -231,7 +258,7 @@ fn handle_action(action: UiAction, state: &mut RunningState) {
         UiAction::StopCapture => {
             state.capture.take();
             state.frame_rx.take();
-            state.audio.take(); // stop audio alongside video
+            state.audio.take();
             log::info!("Capture stopped");
         }
 
@@ -257,11 +284,7 @@ fn handle_action(action: UiAction, state: &mut RunningState) {
         }
 
         UiAction::StartAudio { device_hint } => {
-            let hint = if device_hint.is_empty() {
-                None
-            } else {
-                Some(device_hint.as_str())
-            };
+            let hint = if device_hint.is_empty() { None } else { Some(device_hint.as_str()) };
             match AudioPassthrough::start(hint) {
                 Ok(audio) => state.audio = Some(audio),
                 Err(e) => log::error!("Failed to start audio: {e}"),
@@ -271,6 +294,13 @@ fn handle_action(action: UiAction, state: &mut RunningState) {
         UiAction::StopAudio => {
             state.audio.take();
             log::info!("Audio stopped");
+        }
+
+        UiAction::QueryDeviceResolutions { device_index } => {
+            // Only one query at a time; ignore if one is already running.
+            if state.resolution_query_rx.is_none() {
+                state.resolution_query_rx = Some(spawn_resolution_query(device_index));
+            }
         }
     }
 }

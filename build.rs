@@ -74,12 +74,12 @@ fn write_empty_bundle(out_path: &Path) {
     .expect("write dlls.rs");
 }
 
-/// Collect all avXXX / swXXX / postproc DLL files from the FFmpeg bin dir.
+/// Collect only the FFmpeg DLLs actually needed for our use case:
+/// avcodec (H.264 encode), avformat (MP4 mux), avutil (shared utils),
+/// swscale (RGBA→YUV pixel conversion), swresample (sample-rate conversion).
+/// avdevice / avfilter / postproc are excluded — we use nokhwa for capture.
 fn find_ffmpeg_dlls(bin_dir: &Path) -> Vec<PathBuf> {
-    let prefixes = [
-        "avcodec", "avformat", "avutil", "avdevice",
-        "avfilter", "swresample", "swscale", "postproc",
-    ];
+    const NEEDED: &[&str] = &["avcodec", "avformat", "avutil", "swscale", "swresample"];
 
     match std::fs::read_dir(bin_dir) {
         Ok(entries) => entries
@@ -87,7 +87,7 @@ fn find_ffmpeg_dlls(bin_dir: &Path) -> Vec<PathBuf> {
             .filter(|e| {
                 let n = e.file_name();
                 let n = n.to_string_lossy().to_lowercase();
-                n.ends_with(".dll") && prefixes.iter().any(|p| n.starts_with(p))
+                n.ends_with(".dll") && NEEDED.iter().any(|p| n.starts_with(p))
             })
             .map(|e| e.path())
             .collect(),
