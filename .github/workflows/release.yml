@@ -74,6 +74,10 @@ jobs:
           echo "PKG_CONFIG_PATH=${FFMPEG_PREFIX}/lib/pkgconfig" >> $GITHUB_ENV
           echo "LIBCLANG_PATH=${LLVM_PREFIX}/lib" >> $GITHUB_ENV
           echo "PATH=${LLVM_PREFIX}/bin:${PATH}" >> $GITHUB_ENV
+          # avfft.h was removed in FFmpeg 7.0 but ffmpeg-sys-next still tries to bind it.
+          # Ubuntu apt keeps it as a compat header; upstream (brew) does not → create stub.
+          AVFFT="${FFMPEG_PREFIX}/include/libavcodec/avfft.h"
+          [ -f "$AVFFT" ] || printf '#ifndef AVCODEC_AVFFT_H\n#define AVCODEC_AVFFT_H\n#endif\n' > "$AVFFT"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -119,6 +123,14 @@ jobs:
           Expand-Archive -Path $zip -DestinationPath $dest -Force
           $inner = (Get-ChildItem -Path $dest -Directory | Select-Object -First 1).FullName
           Move-Item $inner $ffmpegDir
+
+          # avfft.h was removed in FFmpeg 7.0; ffmpeg-sys-next still tries to bind it.
+          # Create an empty stub so bindgen doesn't fail.
+          $avfftDir = "$ffmpegDir\include\libavcodec"
+          $avfftPath = "$avfftDir\avfft.h"
+          if (-not (Test-Path $avfftPath)) {
+            Set-Content $avfftPath "#ifndef AVCODEC_AVFFT_H`n#define AVCODEC_AVFFT_H`n#endif`n"
+          }
 
           # LLVM/libclang is pre-installed on windows-latest at C:\Program Files\LLVM
           # libclang.dll lives in bin\, not lib\
