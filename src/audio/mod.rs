@@ -1,13 +1,20 @@
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::HeapRb;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
+};
 
 /// Live audio pass-through: UAC input device → system default output.
 ///
+/// Each device uses its own native sample rate and channel count.
+/// The ring buffer handles any rate/channel mismatch between the two.
 /// Dropping this struct stops both streams cleanly.
 pub struct AudioPassthrough {
     _input_stream: cpal::Stream,
     _output_stream: cpal::Stream,
+    volume: Arc<AtomicU32>,
 }
 
 impl AudioPassthrough {
@@ -16,58 +23,53 @@ impl AudioPassthrough {
     /// `input_device_name` — optional substring to match against the audio
     /// input device name (e.g. "ShadowCast", "Genki"). Falls back to the
     /// system default input if no match is found.
-    pub fn start(input_device_name: Option<&str>) -> Result<Self> {
+    /// `initial_volume` — linear gain, 1.0 = unity.
+    pub fn start(input_device_name: Option<&str>, initial_volume: f32) -> Result<Self> {
         let host = cpal::default_host();
 
-        // ── Input device ─────────────────────────────────────────────────────
         let input_device = find_input_device(&host, input_device_name)
             .context("no audio input device available")?;
-        log::info!("Audio input: {}", input_device.name().unwrap_or_default());
+        log::info!("Audio input device: {}", input_device.name().unwrap_or_default());
 
-        // ── Output device ────────────────────────────────────────────────────
         let output_device = host
             .default_output_device()
             .context("no audio output device")?;
-        log::info!("Audio output: {}", output_device.name().unwrap_or_default());
+        log::info!("Audio output device: {}", output_device.name().unwrap_or_default());
 
-        // Use the input's native config (sample rate, channels) to avoid
-        // any resampling on the capture path.
-        let input_supported = input_device
+        // Each device uses its own native config — never force the input rate
+        // onto the output, or ALSA/CoreAudio may silently refuse and produce silence.
+        let in_cfg = input_device
             .default_input_config()
             .context("no default input config")?;
-
-        let in_channels = input_supported.channels() as usize;
-        let sample_rate = input_supported.sample_rate();
-        let stream_cfg = cpal::StreamConfig {
-            channels: input_supported.channels(),
-            sample_rate,
-            buffer_size: cpal::BufferSize::Default,
-        };
-
-        // Try the same rate on the output; if unsupported the OS mixer
-        // handles the conversion transparently.
-        let out_supported = output_device
+        let out_cfg = output_device
             .default_output_config()
             .context("no default output config")?;
-        let out_channels = out_supported.channels() as usize;
-        let out_cfg = cpal::StreamConfig {
-            channels: out_supported.channels(),
-            sample_rate,
-            buffer_size: cpal::BufferSize::Default,
-        };
 
-        // Ring buffer: ~200 ms of interleaved f32 samples.
-        let buf_size = sample_rate.0 as usize * in_channels / 5;
-        let rb = HeapRb::<f32>::new(buf_size * 4);
+        let in_channels = in_cfg.channels() as usize;
+        let out_channels = out_cfg.channels() as usize;
+        let in_rate = in_cfg.sample_rate().0;
+        let out_rate = out_cfg.sample_rate().0;
+
+        log::info!(
+            "Audio config — in: {in_channels}ch @ {in_rate}Hz  |  out: {out_channels}ch @ {out_rate}Hz"
+        );
+
+        // Ring buffer sized for ~400 ms of input audio (generous headroom for
+        // any rate difference between input and output).
+        let buf_samples = in_rate as usize * in_channels * 2 / 5;
+        let rb = HeapRb::<f32>::new(buf_samples.max(8192));
         let (mut prod, mut cons) = rb.split();
 
+        let volume = Arc::new(AtomicU32::new(initial_volume.to_bits()));
+        let volume_reader = Arc::clone(&volume);
+
         // ── Input stream: capture card → ring buffer ──────────────────────────
+        // Use the device's native config (converted to StreamConfig).
+        let in_stream_cfg = in_cfg.config();
         let input_stream = input_device
             .build_input_stream(
-                &stream_cfg,
+                &in_stream_cfg,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    // push_slice returns the number of samples written; we
-                    // silently drop any excess (back-pressure, ring is full).
                     prod.push_slice(data);
                 },
                 |e| log::error!("Audio input error: {e}"),
@@ -76,26 +78,33 @@ impl AudioPassthrough {
             .context("build audio input stream")?;
 
         // ── Output stream: ring buffer → speakers ─────────────────────────────
+        let out_stream_cfg = out_cfg.config();
         let output_stream = output_device
             .build_output_stream(
-                &out_cfg,
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                &out_stream_cfg,
+                move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    let vol = f32::from_bits(volume_reader.load(Ordering::Relaxed));
+
                     if in_channels == out_channels {
-                        // Happy path: same layout, bulk copy.
-                        let filled = cons.pop_slice(data);
-                        // Silence any unfilled samples (ring underrun).
-                        data[filled..].fill(0.0);
+                        // Same channel layout: bulk copy + volume
+                        let filled = cons.pop_slice(out);
+                        for s in &mut out[..filled] {
+                            *s *= vol;
+                        }
+                        out[filled..].fill(0.0);
                     } else {
-                        // Channel count mismatch: process frame-by-frame.
-                        for out_frame in data.chunks_mut(out_channels) {
-                            let mut in_frame = [0.0f32; 8]; // up to 7.1
-                            let n = cons.pop_slice(&mut in_frame[..in_channels]);
-                            for (i, out_s) in out_frame.iter_mut().enumerate() {
-                                *out_s = if i < n {
-                                    in_frame[i]
+                        // Different channel counts: frame-by-frame conversion
+                        for out_frame in out.chunks_mut(out_channels) {
+                            let mut in_buf = [0.0f32; 8]; // supports up to 7.1
+                            let n = cons.pop_slice(&mut in_buf[..in_channels.min(8)]);
+                            for (i, s) in out_frame.iter_mut().enumerate() {
+                                *s = if i < n {
+                                    in_buf[i] * vol
+                                } else if n > 0 {
+                                    // Upmix: repeat last available channel
+                                    in_buf[n - 1] * vol
                                 } else {
-                                    // Upmix: repeat last captured channel.
-                                    in_frame[n.saturating_sub(1)]
+                                    0.0
                                 };
                             }
                         }
@@ -106,18 +115,22 @@ impl AudioPassthrough {
             )
             .context("build audio output stream")?;
 
-        input_stream.play().context("start audio input")?;
-        output_stream.play().context("start audio output")?;
+        input_stream.play().context("start audio input stream")?;
+        output_stream.play().context("start audio output stream")?;
 
-        log::info!(
-            "Audio pass-through active: {in_channels}ch in, {out_channels}ch out @ {} Hz",
-            sample_rate.0
-        );
+        log::info!("Audio pass-through active (vol={initial_volume:.2})");
 
         Ok(Self {
             _input_stream: input_stream,
             _output_stream: output_stream,
+            volume,
         })
+    }
+
+    /// Set playback volume (linear gain). 0.0 = mute, 1.0 = unity, up to 2.0.
+    /// Thread-safe — can be called from the UI thread at any time.
+    pub fn set_volume(&self, v: f32) {
+        self.volume.store(v.to_bits(), Ordering::Relaxed);
     }
 
     /// List all available audio input device names.
@@ -130,20 +143,19 @@ impl AudioPassthrough {
 }
 
 fn find_input_device(host: &cpal::Host, name_hint: Option<&str>) -> Option<cpal::Device> {
-    let hint_lower = name_hint.map(|h| h.to_lowercase());
-
-    if let Some(ref hint) = hint_lower {
+    if let Some(hint) = name_hint {
+        let hint_lower = hint.to_lowercase();
         if let Ok(mut devs) = host.input_devices() {
             let matched = devs.find(|d| {
                 d.name()
-                    .map(|n| n.to_lowercase().contains(hint.as_str()))
+                    .map(|n| n.to_lowercase().contains(&hint_lower))
                     .unwrap_or(false)
             });
-            if matched.is_some() {
-                return matched;
+            if let Some(dev) = matched {
+                return Some(dev);
             }
         }
     }
-
+    // Fallback: system default input
     host.default_input_device()
 }

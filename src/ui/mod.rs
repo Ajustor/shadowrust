@@ -13,29 +13,24 @@ pub struct UiState {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
-    pub fps_display: f32, // updated every frame by app.rs
+    pub fps_display: f32,
+    pub volume: f32,
     pub record_path: String,
     pub latency_ms: f32,
     pub frames_dropped: u64,
     pub pending_actions: Vec<UiAction>,
-    // Video devices
     devices: Vec<String>,
     devices_loaded: bool,
-    // Audio input devices
     audio_devices: Vec<String>,
     audio_devices_loaded: bool,
-    // Resolutions queried from the driver (empty until query completes)
     device_resolutions: Vec<DeviceResolution>,
     selected_resolution_idx: usize,
-    // Whether to show custom width/height drag values
     custom_resolution: bool,
 }
 
 impl UiState {
-    /// Receive driver-reported resolutions from the background query thread.
     pub fn set_device_resolutions(&mut self, resolutions: Vec<DeviceResolution>) {
         self.device_resolutions = resolutions;
-        // Pre-select 1080p if available, otherwise the largest.
         self.selected_resolution_idx = self
             .device_resolutions
             .iter()
@@ -64,15 +59,8 @@ impl UiState {
     }
 }
 
-/// The `fps` field on `UiState` is kept in sync from app.rs.
-/// Rename to avoid shadowing the struct field below.
-impl UiState {
-    // fps_display is written by app.rs; this alias makes intent clear.
-}
-
 pub fn draw(ctx: &egui::Context, state: &mut UiState) {
-    // Tab is consumed by egui for focus navigation, so we must handle it here
-    // inside the egui context rather than relying on the winit keyboard event.
+    // Tab key handled here so it works even when egui has keyboard focus.
     if ctx.input(|i| i.key_pressed(egui::Key::Tab)) {
         state.menu_visible = !state.menu_visible;
     }
@@ -92,12 +80,18 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                 .inner_margin(6.0),
         )
         .show(ctx, |ui| {
-            ui.colored_label(
-                egui::Color32::from_rgb(180, 255, 180),
-                format!("{:.1} FPS", state.fps_display),
-            );
+            if state.capturing {
+                ui.colored_label(
+                    egui::Color32::from_rgb(180, 255, 180),
+                    format!("{:.1} FPS (capture)", state.fps_display),
+                );
+            } else {
+                ui.colored_label(egui::Color32::GRAY, "No capture");
+            }
             if !state.menu_visible {
-                ui.small(egui::RichText::new("Tab — show settings").color(egui::Color32::GRAY));
+                ui.small(
+                    egui::RichText::new("Tab — show settings").color(egui::Color32::GRAY),
+                );
             }
         });
 
@@ -127,7 +121,7 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                     .get(state.selected_device)
                     .cloned()
                     .unwrap_or_default();
-                let prev = state.selected_device;
+                let prev_device = state.selected_device;
 
                 egui::ComboBox::from_id_salt("video-device")
                     .selected_text(&label)
@@ -137,14 +131,24 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                         }
                     });
 
-                // When device changes, query its resolutions.
-                if state.selected_device != prev {
+                if state.selected_device != prev_device {
+                    // Changing device: query its resolutions and restart capture
                     state.device_resolutions.clear();
                     state
                         .pending_actions
                         .push(UiAction::QueryDeviceResolutions {
                             device_index: state.selected_device,
                         });
+                    if state.capturing {
+                        // Restart with the same resolution on the new device;
+                        // audio will auto-sync to the new device in handle_action.
+                        state.pending_actions.push(UiAction::RestartCapture {
+                            device_index: state.selected_device,
+                            width: state.width,
+                            height: state.height,
+                            fps: state.fps,
+                        });
+                    }
                 }
 
                 if ui.button("🔄 Refresh").clicked() {
@@ -154,32 +158,12 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
 
             ui.separator();
 
-            // ── Audio device ─────────────────────────────────────────────────
-            ui.heading("🔊 Audio Device");
-
-            if state.audio_devices.is_empty() {
-                ui.colored_label(
-                    egui::Color32::from_rgb(255, 180, 0),
-                    "⚠ No audio input device detected",
-                );
-            } else {
-                let audio_label = state
-                    .audio_devices
-                    .get(state.selected_audio_device)
-                    .cloned()
-                    .unwrap_or_default();
-                egui::ComboBox::from_id_salt("audio-device")
-                    .selected_text(&audio_label)
-                    .show_ui(ui, |ui| {
-                        for (i, name) in state.audio_devices.clone().iter().enumerate() {
-                            ui.selectable_value(&mut state.selected_audio_device, i, name);
-                        }
-                    });
-            }
+            // ── Audio ─────────────────────────────────────────────────────────
+            ui.heading("🔊 Audio");
 
             ui.horizontal(|ui| {
                 if state.audio_active {
-                    ui.colored_label(egui::Color32::from_rgb(80, 200, 80), "🔊 Audio live");
+                    ui.colored_label(egui::Color32::from_rgb(80, 200, 80), "🔊 Live");
                     if ui.button("🔇 Mute").clicked() {
                         state.pending_actions.push(UiAction::StopAudio);
                         state.audio_active = false;
@@ -204,12 +188,32 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                 }
             });
 
+            // Volume slider
+            ui.horizontal(|ui| {
+                ui.label("Volume:");
+                let prev_vol = state.volume;
+                ui.add(
+                    egui::Slider::new(&mut state.volume, 0.0..=2.0)
+                        .step_by(0.05)
+                        .show_value(true)
+                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                );
+                if (state.volume - prev_vol).abs() > 0.001 {
+                    state
+                        .pending_actions
+                        .push(UiAction::SetVolume { volume: state.volume });
+                }
+            });
+
             ui.separator();
 
-            // ── Settings ─────────────────────────────────────────────────────
+            // ── Resolution & FPS ──────────────────────────────────────────────
             ui.heading("⚙️ Settings");
 
-            // Resolution — driver-reported if available, fallback to presets.
+            let prev_w = state.width;
+            let prev_h = state.height;
+            let prev_fps = state.fps;
+
             if !state.device_resolutions.is_empty() {
                 let label = state
                     .device_resolutions
@@ -237,7 +241,6 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                                 state.custom_resolution = false;
                             }
                         }
-                        // Custom entry at the bottom.
                         ui.separator();
                         if ui
                             .selectable_label(state.custom_resolution, "Custom")
@@ -247,27 +250,29 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                         }
                     });
             } else {
-                // Still waiting for query, or no device — show static presets.
                 const PRESETS: &[(&str, u32, u32, u32)] = &[
-                    ("1080p FHD — 1920×1080 @ 60fps", 1920, 1080, 60),
-                    ("1440p QHD — 2560×1440 @ 60fps", 2560, 1440, 60),
-                    ("4K UHD  — 3840×2160 @ 30fps", 3840, 2160, 30),
+                    ("1080p — 1920×1080 @ 60fps", 1920, 1080, 60),
+                    ("1440p — 2560×1440 @ 60fps", 2560, 1440, 60),
+                    ("4K    — 3840×2160 @ 30fps", 3840, 2160, 30),
                     ("Custom", 0, 0, 0),
                 ];
-                let preset_idx_ref = &mut state.selected_resolution_idx;
                 let preset_label = if state.custom_resolution {
                     "Custom"
                 } else {
                     PRESETS
-                        .get(*preset_idx_ref)
+                        .get(state.selected_resolution_idx)
                         .map(|(l, _, _, _)| *l)
-                        .unwrap_or("1080p FHD")
+                        .unwrap_or("1080p")
                 };
                 egui::ComboBox::from_label("Resolution")
                     .selected_text(preset_label)
                     .show_ui(ui, |ui| {
                         for (i, (label, w, h, fps)) in PRESETS.iter().enumerate() {
-                            if ui.selectable_value(preset_idx_ref, i, *label).clicked() && *w != 0 {
+                            if ui
+                                .selectable_value(&mut state.selected_resolution_idx, i, *label)
+                                .clicked()
+                                && *w != 0
+                            {
                                 state.width = *w;
                                 state.height = *h;
                                 state.fps = *fps;
@@ -280,7 +285,6 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                 }
             }
 
-            // Custom drag values (shown when "Custom" is selected).
             if state.custom_resolution {
                 ui.horizontal(|ui| {
                     ui.label("Width:");
@@ -296,18 +300,30 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                             .speed(8.0),
                     );
                 });
+
+                ui.horizontal(|ui| {
+                    ui.label("FPS:");
+                    egui::ComboBox::from_id_salt("fps")
+                        .selected_text(state.fps.to_string())
+                        .show_ui(ui, |ui| {
+                            for &f in &[30u32, 60, 120] {
+                                ui.selectable_value(&mut state.fps, f, f.to_string());
+                            }
+                        });
+                });
             }
 
-            ui.horizontal(|ui| {
-                ui.label("FPS:");
-                egui::ComboBox::from_id_salt("fps")
-                    .selected_text(state.fps.to_string())
-                    .show_ui(ui, |ui| {
-                        for &f in &[30u32, 60, 120] {
-                            ui.selectable_value(&mut state.fps, f, f.to_string());
-                        }
-                    });
-            });
+            // If resolution changed while capturing → restart automatically
+            let res_changed =
+                state.width != prev_w || state.height != prev_h || state.fps != prev_fps;
+            if res_changed && state.capturing && !state.custom_resolution {
+                state.pending_actions.push(UiAction::RestartCapture {
+                    device_index: state.selected_device,
+                    width: state.width,
+                    height: state.height,
+                    fps: state.fps,
+                });
+            }
 
             ui.separator();
 
@@ -360,6 +376,6 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
             ui.separator();
             ui.label(format!("Frames dropped: {}", state.frames_dropped));
             ui.separator();
-            ui.small("Tab: toggle this panel  |  F11: Fullscreen  |  Esc: Quit");
+            ui.small("Tab: toggle panel  |  F11: Fullscreen  |  Esc: Quit");
         });
 }
