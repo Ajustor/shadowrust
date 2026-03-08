@@ -102,10 +102,14 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 /// Returns true if point (px, py) is inside the triangle defined by v1, v2, v3.
 fn in_triangle(
-    px: f32, py: f32,
-    v1x: f32, v1y: f32,
-    v2x: f32, v2y: f32,
-    v3x: f32, v3y: f32,
+    px: f32,
+    py: f32,
+    v1x: f32,
+    v1y: f32,
+    v2x: f32,
+    v2y: f32,
+    v3x: f32,
+    v3y: f32,
 ) -> bool {
     let sign = |ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32| -> f32 {
         (ax - cx) * (by - cy) - (bx - cx) * (ay - cy)

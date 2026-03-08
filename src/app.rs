@@ -203,6 +203,13 @@ impl ApplicationHandler for App {
                         }
 
                         if let Some(rec) = &mut state.recorder {
+                            // Drain audio captured since the last frame and mux it
+                            if let Some(audio) = &state.audio {
+                                let samples = audio.drain_recording_samples();
+                                if !samples.is_empty() {
+                                    rec.push_audio(&samples);
+                                }
+                            }
                             rec.push_frame(&frame, state.frame_size);
                         }
                         state.renderer.update_frame(&frame, state.frame_size);
@@ -384,10 +391,16 @@ fn handle_action(action: UiAction, state: &mut RunningState, ui_state: &mut UiSt
 
         UiAction::StartRecording { path } => {
             let (w, h) = state.frame_size;
-            match Recorder::new(&path, w, h, 60) {
+            // Use audio device's native rate/channels when available, fallback to 48000/2
+            let (rate, ch) = state
+                .audio
+                .as_ref()
+                .map(|a| (a.sample_rate, a.channels))
+                .unwrap_or((48000, 2));
+            match Recorder::new(&path, w, h, 60, rate, ch) {
                 Ok(rec) => {
                     state.recorder = Some(rec);
-                    log::info!("Recording → {path}");
+                    log::info!("Recording → {path} (audio {ch}ch @ {rate}Hz)");
                 }
                 Err(e) => log::error!("Failed to start recording: {e}"),
             }

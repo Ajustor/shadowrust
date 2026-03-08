@@ -7,6 +7,7 @@ pub struct UiState {
     pub capturing: bool,
     pub recording: bool,
     pub audio_active: bool,
+    pub muted: bool,
     pub menu_visible: bool,
     pub selected_device: usize,
     pub selected_audio_device: usize,
@@ -89,9 +90,7 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                 ui.colored_label(egui::Color32::GRAY, "No capture");
             }
             if !state.menu_visible {
-                ui.small(
-                    egui::RichText::new("Tab — show settings").color(egui::Color32::GRAY),
-                );
+                ui.small(egui::RichText::new("Tab — show settings").color(egui::Color32::GRAY));
             }
         });
 
@@ -163,10 +162,21 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
 
             ui.horizontal(|ui| {
                 if state.audio_active {
-                    ui.colored_label(egui::Color32::from_rgb(80, 200, 80), "🔊 Live");
-                    if ui.button("🔇 Mute").clicked() {
-                        state.pending_actions.push(UiAction::StopAudio);
-                        state.audio_active = false;
+                    // Status indicator
+                    if state.muted {
+                        ui.colored_label(egui::Color32::GRAY, "🔇 Muted");
+                    } else {
+                        ui.colored_label(egui::Color32::from_rgb(80, 200, 80), "🔊 Live");
+                    }
+                    // Mute/unmute: volume goes to 0 or restores — stream stays alive,
+                    // so the capture card audio device connection is never lost.
+                    let mute_label = if state.muted { "Unmute" } else { "Mute" };
+                    if ui.button(mute_label).clicked() {
+                        state.muted = !state.muted;
+                        let vol = if state.muted { 0.0 } else { state.volume };
+                        state
+                            .pending_actions
+                            .push(UiAction::SetVolume { volume: vol });
                     }
                 } else if ui.button("🔊 Start audio").clicked() {
                     let hint = state
@@ -199,9 +209,9 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                         .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
                 );
                 if (state.volume - prev_vol).abs() > 0.001 {
-                    state
-                        .pending_actions
-                        .push(UiAction::SetVolume { volume: state.volume });
+                    state.pending_actions.push(UiAction::SetVolume {
+                        volume: state.volume,
+                    });
                 }
             });
 

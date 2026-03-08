@@ -166,9 +166,9 @@ fn render_icon(size: u32) -> Vec<u8> {
             }
             if dd <= dot_r {
                 let da = ((dot_r - dd) / 1.5_f32).clamp(0.0, 1.0);
-                let hl = (1.0 - (idist(x, y, dot_cx - dot_r * 0.28, dot_cy - dot_r * 0.28)
-                    / (dot_r * 0.9))
-                    .clamp(0.0, 1.0))
+                let hl = (1.0
+                    - (idist(x, y, dot_cx - dot_r * 0.28, dot_cy - dot_r * 0.28) / (dot_r * 0.9))
+                        .clamp(0.0, 1.0))
                     * 0.35;
                 r = lrp(r as f32, lrp(220.0, 255.0, hl), da) as u8;
                 g = lrp(g as f32, lrp(50.0, 100.0, hl), da) as u8;
@@ -194,12 +194,7 @@ fn lrp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t.clamp(0.0, 1.0)
 }
 
-fn in_tri(
-    px: f32, py: f32,
-    v1x: f32, v1y: f32,
-    v2x: f32, v2y: f32,
-    v3x: f32, v3y: f32,
-) -> bool {
+fn in_tri(px: f32, py: f32, v1x: f32, v1y: f32, v2x: f32, v2y: f32, v3x: f32, v3y: f32) -> bool {
     let sg = |ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32| -> f32 {
         (ax - cx) * (by - cy) - (bx - cx) * (ay - cy)
     };
