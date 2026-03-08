@@ -59,7 +59,7 @@ mod dll_bundle {
         #[allow(unsafe_code)]
         unsafe {
             use std::os::windows::ffi::OsStrExt;
-            extern "system" {
+            unsafe extern "system" {
                 fn SetDllDirectoryW(path: *const u16) -> i32;
             }
             let wide: Vec<u16> = dll_dir
