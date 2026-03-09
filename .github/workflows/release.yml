@@ -167,7 +167,7 @@ jobs:
     with:
       package_name: ShadowRust
       version: ${{ needs.release.outputs.version }}
-      is_repo_public: true
+      is_repo_public: false
     permissions:
       contents: write
       pages: write
