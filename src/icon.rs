@@ -121,3 +121,84 @@ fn in_triangle(
     let has_pos = (d1 > 0.0) || (d2 > 0.0) || (d3 > 0.0);
     !(has_neg && has_pos)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_icon_rgba_correct_size() {
+        let buf = make_icon_rgba(64);
+        assert_eq!(buf.len(), 64 * 64 * 4);
+    }
+
+    #[test]
+    fn test_make_icon_rgba_256() {
+        let buf = make_icon_rgba(256);
+        assert_eq!(buf.len(), 256 * 256 * 4);
+    }
+
+    #[test]
+    fn test_make_icon_rgba_not_all_zeros() {
+        let buf = make_icon_rgba(32);
+        // The icon should have some non-zero pixels
+        assert!(buf.iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn test_corner_pixels_transparent() {
+        let size = 64u32;
+        let buf = make_icon_rgba(size);
+        // Top-left corner (0,0) should be transparent (outside circle)
+        let idx = 0usize;
+        assert_eq!(buf[idx + 3], 0, "top-left corner alpha should be 0");
+    }
+
+    #[test]
+    fn test_center_pixel_opaque() {
+        let size = 64u32;
+        let buf = make_icon_rgba(size);
+        // Center pixel should be opaque (inside circle)
+        let cx = size / 2;
+        let cy = size / 2;
+        let idx = ((cy * size + cx) * 4) as usize;
+        assert!(buf[idx + 3] > 200, "center pixel alpha should be high");
+    }
+
+    #[test]
+    fn test_lerp_basic() {
+        assert!((lerp(0.0, 10.0, 0.5) - 5.0).abs() < f32::EPSILON);
+        assert!((lerp(0.0, 10.0, 0.0) - 0.0).abs() < f32::EPSILON);
+        assert!((lerp(0.0, 10.0, 1.0) - 10.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_lerp_clamped() {
+        // t > 1.0 should clamp to b
+        assert!((lerp(0.0, 10.0, 2.0) - 10.0).abs() < f32::EPSILON);
+        // t < 0.0 should clamp to a
+        assert!((lerp(0.0, 10.0, -1.0) - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_dist() {
+        assert!((dist(0.0, 0.0, 3.0, 4.0) - 5.0).abs() < 0.001);
+        assert!((dist(1.0, 1.0, 1.0, 1.0) - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_in_triangle_inside() {
+        assert!(in_triangle(1.0, 1.0, 0.0, 0.0, 3.0, 0.0, 0.0, 3.0));
+    }
+
+    #[test]
+    fn test_in_triangle_outside() {
+        assert!(!in_triangle(5.0, 5.0, 0.0, 0.0, 3.0, 0.0, 0.0, 3.0));
+    }
+
+    #[test]
+    fn test_in_triangle_on_edge() {
+        // Point on the edge should be considered inside
+        assert!(in_triangle(1.5, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 3.0));
+    }
+}

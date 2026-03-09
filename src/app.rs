@@ -529,3 +529,51 @@ fn handle_action(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_audio_hint_strips_index_prefix() {
+        let hint = audio_hint_for_device("[0] Genki ShadowCast 2");
+        assert_eq!(hint, Some("Genki".to_string()));
+    }
+
+    #[test]
+    fn test_audio_hint_no_prefix() {
+        let hint = audio_hint_for_device("Elgato HD60 S+");
+        assert_eq!(hint, Some("Elgato".to_string()));
+    }
+
+    #[test]
+    fn test_audio_hint_short_words_skipped() {
+        // Words shorter than 4 chars are skipped
+        let hint = audio_hint_for_device("[1] USB HD Capture");
+        assert_eq!(hint, Some("Capture".to_string()));
+    }
+
+    #[test]
+    fn test_audio_hint_empty_name() {
+        let hint = audio_hint_for_device("");
+        assert_eq!(hint, None);
+    }
+
+    #[test]
+    fn test_audio_hint_all_short_words() {
+        let hint = audio_hint_for_device("[0] AB CD EF");
+        assert_eq!(hint, None);
+    }
+
+    #[test]
+    fn test_audio_hint_single_long_word() {
+        let hint = audio_hint_for_device("Microphone");
+        assert_eq!(hint, Some("Microphone".to_string()));
+    }
+
+    #[test]
+    fn test_audio_hint_with_index_and_long_name() {
+        let hint = audio_hint_for_device("[2] AVerMedia Live Gamer");
+        assert_eq!(hint, Some("AVerMedia".to_string()));
+    }
+}
