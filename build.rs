@@ -38,12 +38,16 @@ fn bundle_ffmpeg_dlls(out_path: &Path) {
         const KNOWN_DLL_NAMES: &[&str] = &[
             // FFmpeg 7.x (BtbN gpl-shared-7.1)
             "avcodec-61.dll",
+            "avdevice-61.dll",
+            "avfilter-61.dll",
             "avformat-61.dll",
             "avutil-59.dll",
             "swscale-8.dll",
             "swresample-5.dll",
             // FFmpeg 6.x
             "avcodec-60.dll",
+            "avdevice-60.dll",
+            "avfilter-60.dll",
             "avformat-60.dll",
             "avutil-58.dll",
             "swscale-7.dll",
@@ -102,7 +106,10 @@ fn bundle_ffmpeg_dlls(out_path: &Path) {
     std::fs::write(out_path.join("dlls.rs"), code).expect("write dlls.rs");
 
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
-    println!("cargo:rerun-if-changed={}", Path::new(&ffmpeg_dir).display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        Path::new(&ffmpeg_dir).display()
+    );
 }
 
 fn write_empty_bundle(out_path: &Path) {
@@ -118,7 +125,9 @@ fn write_empty_bundle(out_path: &Path) {
 /// swscale (RGBA→YUV pixel conversion), swresample (sample-rate conversion).
 /// avdevice / avfilter / postproc are excluded — we use nokhwa for capture.
 fn find_ffmpeg_dlls(bin_dir: &Path) -> Vec<PathBuf> {
-    const NEEDED: &[&str] = &["avcodec", "avformat", "avutil", "swscale", "swresample"];
+    const NEEDED: &[&str] = &[
+        "avcodec", "avformat", "avutil", "avdevice", "swscale", "swresample",
+    ];
 
     match std::fs::read_dir(bin_dir) {
         Ok(entries) => entries
