@@ -46,7 +46,11 @@ impl App {
         let cfg = AppConfig::load();
         log::info!(
             "Config loaded: {}x{}@{}fps vol={:.2} device={:?}",
-            cfg.width, cfg.height, cfg.fps, cfg.volume, cfg.video_device
+            cfg.width,
+            cfg.height,
+            cfg.fps,
+            cfg.volume,
+            cfg.video_device
         );
 
         let mut ui_state = UiState::default();
@@ -356,9 +360,8 @@ fn handle_action(
                     }
 
                     // ── Save config: device + resolution ─────────────────────
-                    let video_device_name = crate::capture::list_devices()
-                        .into_iter()
-                        .nth(device_index);
+                    let video_device_name =
+                        crate::capture::list_devices().into_iter().nth(device_index);
                     let new_cfg = AppConfig {
                         video_device: video_device_name,
                         audio_device: ui_state.selected_audio_device_name(),
