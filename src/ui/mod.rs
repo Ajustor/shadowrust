@@ -1,6 +1,7 @@
 use crate::app::UiAction;
 use crate::audio::AudioPassthrough;
 use crate::capture::{DeviceResolution, list_devices};
+use crate::updater::{UpdateChecker, UpdateStatus};
 
 #[derive(Default)]
 pub struct UiState {
@@ -23,6 +24,10 @@ pub struct UiState {
     /// Preferred device names restored from config (used for auto-selection)
     pub preferred_video_device: Option<String>,
     pub preferred_audio_device: Option<String>,
+    /// Background update checker (started once)
+    pub update_checker: Option<UpdateChecker>,
+    /// Whether the user dismissed the update notification
+    pub update_dismissed: bool,
     devices: Vec<String>,
     devices_loaded: bool,
     audio_devices: Vec<String>,
@@ -109,6 +114,47 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
 
     state.load_video_devices();
     state.load_audio_devices();
+
+    // ── Start update checker on first draw ────────────────────────────────────
+    if state.update_checker.is_none() {
+        state.update_checker = Some(UpdateChecker::start());
+    }
+
+    // ── Update notification banner ────────────────────────────────────────────
+    if !state.update_dismissed {
+        if let Some(checker) = &state.update_checker {
+            if let UpdateStatus::Available { version, url } = checker.get() {
+                egui::Window::new("##update")
+                    .title_bar(false)
+                    .resizable(false)
+                    .movable(false)
+                    .anchor(egui::Align2::CENTER_TOP, [0.0, 8.0])
+                    .frame(
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(30, 70, 30))
+                            .stroke(egui::Stroke::new(
+                                1.0,
+                                egui::Color32::from_rgb(80, 200, 80),
+                            ))
+                            .inner_margin(10.0),
+                    )
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(120, 255, 120),
+                                format!("🆕 ShadowRust v{version} is available!"),
+                            );
+                            if ui.small_button("⬇ Download").clicked() {
+                                open_url(&url);
+                            }
+                            if ui.small_button("✕").clicked() {
+                                state.update_dismissed = true;
+                            }
+                        });
+                    });
+            }
+        }
+    }
 
     // ── Always-visible FPS / hint overlay ────────────────────────────────────
     egui::Window::new("##fps")
@@ -432,4 +478,22 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                 env!("CARGO_PKG_VERSION")
             ));
         });
+}
+
+/// Open a URL in the system default browser, cross-platform.
+fn open_url(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/c", "start", "", url])
+            .spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
 }

@@ -14,6 +14,7 @@ mod power;
 mod record;
 mod render;
 mod ui;
+mod updater;
 
 use anyhow::Result;
 use app::App;
