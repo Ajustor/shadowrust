@@ -28,90 +28,103 @@ use app::App;
 mod dll_bundle {
     include!(concat!(env!("OUT_DIR"), "/dlls.rs"));
 
-    /// Extract embedded FFmpeg DLLs to %LOCALAPPDATA%\ShadowRust\dlls and
-    /// register that directory with Windows so it is searched before PATH.
-    /// Also checks for a libs\ folder next to the exe as a first priority.
-    /// Must be called before any FFmpeg function is invoked.
+    /// Load FFmpeg DLLs before any delay-load stub fires.
+    ///
+    /// Strategy: pre-load every DLL by its **full absolute path** via
+    /// `LoadLibraryExW`. Windows caches loaded modules by name, so when the
+    /// delay-load stub later calls `LoadLibrary("avcodec-61.dll")` it gets the
+    /// already-loaded module — no search-path games needed.
+    ///
+    /// Search order:
+    ///   1. `libs\` folder next to the exe  (zip distribution)
+    ///   2. Embedded bytes extracted to `%LOCALAPPDATA%\ShadowRust\dlls`
     #[cfg(windows)]
     pub fn setup() {
-        #[allow(unsafe_code)]
-        unsafe {
-            use std::os::windows::ffi::OsStrExt;
-            unsafe extern "system" {
-                fn SetDllDirectoryW(path: *const u16) -> i32;
-            }
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use std::path::PathBuf;
 
-            // ── Priority 1: libs\ folder next to the exe ──────────────────────
-            // If the user extracted the zip, the DLLs are in exe_dir\libs\.
-            // This is the fastest path and works without writing to AppData.
-            if let Ok(exe) = std::env::current_exe() {
-                if let Some(exe_dir) = exe.parent() {
-                    let libs_dir = exe_dir.join("libs");
-                    if libs_dir.is_dir()
-                        && std::fs::read_dir(&libs_dir)
-                            .map(|mut d| d.any(|e| {
-                                e.ok().map(|e| {
-                                    e.file_name()
-                                        .to_string_lossy()
-                                        .to_lowercase()
-                                        .ends_with(".dll")
-                                }).unwrap_or(false)
-                            }))
-                            .unwrap_or(false)
-                    {
-                        let wide: Vec<u16> = libs_dir
-                            .as_os_str()
-                            .encode_wide()
-                            .chain(std::iter::once(0u16))
-                            .collect();
-                        SetDllDirectoryW(wide.as_ptr());
-                        log::info!("FFmpeg DLLs loaded from {:?}", libs_dir);
+        #[allow(unsafe_code)]
+        unsafe extern "system" {
+            fn LoadLibraryExW(
+                lp_lib_file_name: *const u16,
+                h_file: *mut std::ffi::c_void,
+                dw_flags: u32,
+            ) -> *mut std::ffi::c_void;
+        }
+
+        fn to_wide(s: &OsStr) -> Vec<u16> {
+            s.encode_wide().chain(std::iter::once(0u16)).collect()
+        }
+
+        fn preload_dlls_from(dir: &PathBuf) -> usize {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return 0;
+            };
+            let mut loaded = 0usize;
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy().to_lowercase();
+                if !name_str.ends_with(".dll") {
+                    continue;
+                }
+                let full = dir.join(&name);
+                let wide = to_wide(full.as_os_str());
+                // LOAD_WITH_ALTERED_SEARCH_PATH = 0x8 — uses the DLL's own
+                // directory as base for any of its own imports.
+                let handle = unsafe { LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), 0x8) };
+                if handle.is_null() {
+                    eprintln!("[shadowrust] WARNING: could not load {:?}", full);
+                } else {
+                    loaded += 1;
+                }
+            }
+            loaded
+        }
+
+        // ── 1. libs\ next to the exe ─────────────────────────────────────────
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                let libs_dir = exe_dir.join("libs");
+                if libs_dir.is_dir() {
+                    let n = preload_dlls_from(&libs_dir);
+                    if n > 0 {
+                        eprintln!("[shadowrust] Loaded {n} FFmpeg DLL(s) from {libs_dir:?}");
                         return;
                     }
                 }
             }
-
-            // ── Priority 2: embedded DLLs → extract to LocalAppData ───────────
-            if BUNDLED_DLLS.is_empty() {
-                log::warn!(
-                    "No FFmpeg DLLs found in libs\\ and none embedded — \
-                     recording will not be available."
-                );
-                return;
-            }
-
-            let dll_dir = std::env::var("LOCALAPPDATA")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| std::env::temp_dir())
-                .join("ShadowRust")
-                .join("dlls");
-
-            if let Err(e) = std::fs::create_dir_all(&dll_dir) {
-                log::error!("Cannot create DLL dir {dll_dir:?}: {e}");
-                return;
-            }
-
-            for (name, bytes) in BUNDLED_DLLS {
-                let path = dll_dir.join(name);
-                // Always overwrite so updates replace stale DLLs
-                if let Err(e) = std::fs::write(&path, bytes) {
-                    log::error!("Cannot write {path:?}: {e}");
-                }
-            }
-
-            let wide: Vec<u16> = dll_dir
-                .as_os_str()
-                .encode_wide()
-                .chain(std::iter::once(0u16))
-                .collect();
-            SetDllDirectoryW(wide.as_ptr());
-
-            log::info!(
-                "FFmpeg DLLs extracted to {:?} ({} files)",
-                dll_dir,
-                BUNDLED_DLLS.len()
-            );
         }
+
+        // ── 2. Embedded bytes → extract then pre-load ────────────────────────
+        if BUNDLED_DLLS.is_empty() {
+            eprintln!(
+                "[shadowrust] WARNING: No FFmpeg DLLs in libs\\ and none embedded — \
+                 recording will not be available."
+            );
+            return;
+        }
+
+        let dll_dir = std::env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join("ShadowRust")
+            .join("dlls");
+
+        if let Err(e) = std::fs::create_dir_all(&dll_dir) {
+            eprintln!("[shadowrust] ERROR: Cannot create DLL dir {dll_dir:?}: {e}");
+            return;
+        }
+
+        for (name, bytes) in BUNDLED_DLLS {
+            let path = dll_dir.join(name);
+            if let Err(e) = std::fs::write(&path, bytes) {
+                eprintln!("[shadowrust] ERROR: Cannot write {path:?}: {e}");
+            }
+        }
+
+        let n = preload_dlls_from(&dll_dir);
+        eprintln!("[shadowrust] Loaded {n} embedded FFmpeg DLL(s) from {dll_dir:?}");
     }
 
     #[cfg(not(windows))]
