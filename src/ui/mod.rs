@@ -132,10 +132,7 @@ pub fn draw(ctx: &egui::Context, state: &mut UiState) {
                     .frame(
                         egui::Frame::none()
                             .fill(egui::Color32::from_rgb(30, 70, 30))
-                            .stroke(egui::Stroke::new(
-                                1.0,
-                                egui::Color32::from_rgb(80, 200, 80),
-                            ))
+                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 200, 80)))
                             .inner_margin(10.0),
                     )
                     .show(ctx, |ui| {

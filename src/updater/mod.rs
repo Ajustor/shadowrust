@@ -5,8 +5,7 @@
 /// in a shared mutex so the UI can poll it without blocking.
 use std::sync::{Arc, Mutex};
 
-const GITHUB_RELEASES_URL: &str =
-    "https://api.github.com/repos/Ajustor/shadowrust/releases/latest";
+const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/Ajustor/shadowrust/releases/latest";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpdateStatus {
