@@ -108,11 +108,20 @@ jobs:
       - name: Package release
         shell: pwsh
         run: |
-          # DLLs are embedded in the exe via include_bytes! in build.rs —
-          # no need to ship them separately.
-          Compress-Archive `
-            -Path target\release\shadowrust.exe `
-            -DestinationPath shadowrust-windows-x86_64.zip
+          $null = New-Item -ItemType Directory -Force -Path release\libs
+
+          Copy-Item target\release\shadowrust.exe release\shadowrust.exe
+
+          # Copy the FFmpeg DLLs needed for capture/recording into libs\
+          $needed = @("avcodec", "avformat", "avutil", "swscale", "swresample")
+          foreach ($dll in (Get-ChildItem "$env:FFMPEG_DIR\bin\*.dll")) {
+            $base = $dll.BaseName -replace '-\d+$', ''
+            if ($needed -contains $base) {
+              Copy-Item $dll.FullName release\libs\
+            }
+          }
+
+          Compress-Archive -Path release\* -DestinationPath shadowrust-windows-x86_64.zip
 
       - uses: actions/upload-artifact@v4
         with:
