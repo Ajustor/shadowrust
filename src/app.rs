@@ -11,6 +11,7 @@ use winit::{
 use crate::{
     audio::AudioPassthrough,
     capture::{CaptureConfig, CaptureThread, DeviceResolution},
+    config::AppConfig,
     power::SleepInhibitor,
     record::Recorder,
     render::Renderer,
@@ -20,6 +21,8 @@ use crate::{
 pub struct App {
     state: Option<RunningState>,
     ui_state: UiState,
+    /// Last saved config snapshot — used to detect changes before saving.
+    saved_config: AppConfig,
 }
 
 struct RunningState {
@@ -40,16 +43,28 @@ struct RunningState {
 
 impl App {
     pub fn new() -> Self {
+        let cfg = AppConfig::load();
+        log::info!(
+            "Config loaded: {}x{}@{}fps vol={:.2} device={:?}",
+            cfg.width, cfg.height, cfg.fps, cfg.volume, cfg.video_device
+        );
+
         let mut ui_state = UiState::default();
-        ui_state.width = 1920;
-        ui_state.height = 1080;
-        ui_state.fps = 60;
-        ui_state.volume = 1.0;
-        ui_state.record_path = "capture.mp4".to_string();
+        ui_state.width = cfg.width;
+        ui_state.height = cfg.height;
+        ui_state.fps = cfg.fps;
+        ui_state.volume = cfg.volume;
+        ui_state.record_path = cfg.record_path.clone();
         ui_state.menu_visible = true;
+        // preferred_video_device / preferred_audio_device are picked up later
+        // in auto-start capture once the device list is populated.
+        ui_state.preferred_video_device = cfg.video_device.clone();
+        ui_state.preferred_audio_device = cfg.audio_device.clone();
+
         Self {
             state: None,
             ui_state,
+            saved_config: cfg,
         }
     }
 }
@@ -223,7 +238,7 @@ impl ApplicationHandler for App {
                 // ── Render + process UI actions ───────────────────────────────
                 let actions = state.renderer.render(&mut self.ui_state);
                 for action in actions {
-                    handle_action(action, state, &mut self.ui_state);
+                    handle_action(action, state, &mut self.ui_state, &mut self.saved_config);
                 }
 
                 state.window.request_redraw();
@@ -297,7 +312,12 @@ pub enum UiAction {
     },
 }
 
-fn handle_action(action: UiAction, state: &mut RunningState, ui_state: &mut UiState) {
+fn handle_action(
+    action: UiAction,
+    state: &mut RunningState,
+    ui_state: &mut UiState,
+    saved_config: &mut AppConfig,
+) {
     match action {
         UiAction::StartCapture {
             device_index,
@@ -334,6 +354,19 @@ fn handle_action(action: UiAction, state: &mut RunningState, ui_state: &mut UiSt
                         }
                         Err(e) => log::warn!("Auto-start audio failed: {e}"),
                     }
+
+                    // ── Save config: device + resolution ─────────────────────
+                    let new_cfg = AppConfig {
+                        video_device: ui_state.selected_video_device_name(),
+                        audio_device: ui_state.selected_audio_device_name(),
+                        width,
+                        height,
+                        fps,
+                        volume: ui_state.volume,
+                        record_path: ui_state.record_path.clone(),
+                    };
+                    AppConfig::save_if_changed(saved_config, &new_cfg).ok();
+                    *saved_config = new_cfg;
 
                     log::info!("Capture started: {width}x{height}@{fps}");
                 }
@@ -422,6 +455,9 @@ fn handle_action(action: UiAction, state: &mut RunningState, ui_state: &mut UiSt
             match Recorder::new(&path, w, h, actual_fps, rate, ch) {
                 Ok(rec) => {
                     state.recorder = Some(rec);
+                    // Save the record path preference
+                    saved_config.record_path = path.clone();
+                    saved_config.save();
                     log::info!(
                         "Recording → {path} ({w}x{h}@{actual_fps}fps, audio {ch}ch @ {rate}Hz)"
                     );
@@ -461,6 +497,9 @@ fn handle_action(action: UiAction, state: &mut RunningState, ui_state: &mut UiSt
             if let Some(audio) = &state.audio {
                 audio.set_volume(volume);
             }
+            // Save volume immediately
+            saved_config.volume = volume;
+            saved_config.save();
         }
 
         UiAction::QueryDeviceResolutions { device_index } => {

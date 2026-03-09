@@ -20,6 +20,9 @@ pub struct UiState {
     pub latency_ms: f32,
     pub frames_dropped: u64,
     pub pending_actions: Vec<UiAction>,
+    /// Preferred device names restored from config (used for auto-selection)
+    pub preferred_video_device: Option<String>,
+    pub preferred_audio_device: Option<String>,
     devices: Vec<String>,
     devices_loaded: bool,
     audio_devices: Vec<String>,
@@ -45,10 +48,31 @@ impl UiState {
         self.custom_resolution = false;
     }
 
+    /// Name of the currently selected video capture device, if known.
+    pub fn selected_video_device_name(&self) -> Option<String> {
+        self.devices.get(self.selected_device).cloned()
+    }
+
+    /// Name of the currently selected audio input device, if known.
+    pub fn selected_audio_device_name(&self) -> Option<String> {
+        self.audio_devices.get(self.selected_audio_device).cloned()
+    }
+
     fn load_video_devices(&mut self) {
         if !self.devices_loaded {
             self.devices = list_devices();
             self.devices_loaded = true;
+            // Restore preferred device from saved config
+            if let Some(ref pref) = self.preferred_video_device.clone() {
+                let pref_lower = pref.to_lowercase();
+                if let Some(idx) = self
+                    .devices
+                    .iter()
+                    .position(|d| d.to_lowercase().contains(&pref_lower))
+                {
+                    self.selected_device = idx;
+                }
+            }
         }
     }
 
@@ -56,6 +80,17 @@ impl UiState {
         if !self.audio_devices_loaded {
             self.audio_devices = AudioPassthrough::list_input_devices();
             self.audio_devices_loaded = true;
+            // Restore preferred audio device from saved config
+            if let Some(ref pref) = self.preferred_audio_device.clone() {
+                let pref_lower = pref.to_lowercase();
+                if let Some(idx) = self
+                    .audio_devices
+                    .iter()
+                    .position(|d| d.to_lowercase().contains(&pref_lower))
+                {
+                    self.selected_audio_device = idx;
+                }
+            }
         }
     }
 }

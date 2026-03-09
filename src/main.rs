@@ -7,6 +7,7 @@
 mod app;
 mod audio;
 mod capture;
+mod config;
 mod decode;
 mod icon;
 mod power;
