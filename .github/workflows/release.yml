@@ -132,6 +132,8 @@ jobs:
       needs.build-windows.result == 'success'
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -155,3 +157,18 @@ jobs:
           files: |
             artifacts/shadowrust-linux-x86_64/shadowrust-linux-x86_64
             artifacts/shadowrust-windows-x86_64/shadowrust-windows-x86_64.zip
+
+  # Deploy download page to GitHub Pages
+  deploy-pages:
+    name: Deploy Download Page
+    needs: [release]
+    if: needs.release.result == 'success'
+    uses: Ajustor/workflows/.github/workflows/pages-deploy.yml@master
+    with:
+      package_name: ShadowRust
+      version: ${{ needs.release.outputs.version }}
+      is_repo_public: true
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
