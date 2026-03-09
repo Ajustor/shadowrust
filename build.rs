@@ -27,35 +27,64 @@ fn main() {
 /// include_bytes! and add /DELAYLOAD linker flags so Windows resolves the
 /// DLLs lazily (after our main() has had a chance to call SetDllDirectoryW).
 fn bundle_ffmpeg_dlls(out_path: &Path) {
+    let target = std::env::var("TARGET").unwrap_or_default();
+
+    // /DELAYLOAD makes the Windows PE loader resolve FFmpeg DLLs on first call
+    // instead of at process start, giving main() time to call SetDllDirectoryW.
+    // We always apply this on MSVC — it's safe even if a name doesn't match any
+    // linked import library; the linker simply ignores the unmatched entry.
+    // Covers FFmpeg 6.x and 7.x DLL name variants.
+    if target.contains("msvc") {
+        const KNOWN_DLL_NAMES: &[&str] = &[
+            // FFmpeg 7.x (BtbN gpl-shared-7.1)
+            "avcodec-61.dll",
+            "avformat-61.dll",
+            "avutil-59.dll",
+            "swscale-8.dll",
+            "swresample-5.dll",
+            // FFmpeg 6.x
+            "avcodec-60.dll",
+            "avformat-60.dll",
+            "avutil-58.dll",
+            "swscale-7.dll",
+            "swresample-4.dll",
+        ];
+        for name in KNOWN_DLL_NAMES {
+            println!("cargo:rustc-link-arg=/DELAYLOAD:{name}");
+        }
+        println!("cargo:rustc-link-lib=delayimp");
+    }
+
     let ffmpeg_dir = std::env::var("FFMPEG_DIR").unwrap_or_default();
 
     if ffmpeg_dir.is_empty() {
         eprintln!(
-            "cargo:warning=FFMPEG_DIR not set — FFmpeg DLLs will NOT be embedded. Make sure they are on PATH at runtime."
+            "cargo:warning=FFMPEG_DIR not set — FFmpeg DLLs will NOT be embedded. \
+             Place the FFmpeg 7.x DLLs next to the exe or on PATH at runtime."
         );
         write_empty_bundle(out_path);
         return;
     }
 
+    // Try $FFMPEG_DIR/bin first, then $FFMPEG_DIR directly (some layouts keep
+    // DLLs at the root of the FFmpeg directory).
     let bin_dir = Path::new(&ffmpeg_dir).join("bin");
-    let dlls = find_ffmpeg_dlls(&bin_dir);
+    let dlls = {
+        let from_bin = find_ffmpeg_dlls(&bin_dir);
+        if from_bin.is_empty() {
+            find_ffmpeg_dlls(Path::new(&ffmpeg_dir))
+        } else {
+            from_bin
+        }
+    };
 
     if dlls.is_empty() {
-        eprintln!("cargo:warning=No FFmpeg DLLs found in {bin_dir:?} — they will not be embedded.");
+        eprintln!(
+            "cargo:warning=No FFmpeg DLLs found in {bin_dir:?} — they will not be embedded. \
+             The app will still start; place DLLs next to the exe or on PATH."
+        );
         write_empty_bundle(out_path);
         return;
-    }
-
-    // /DELAYLOAD makes the Windows PE loader resolve these DLLs on first call
-    // instead of at process start, giving main() time to call SetDllDirectoryW.
-    // delayimp.lib provides the delay-load stub runtime.
-    let target = std::env::var("TARGET").unwrap_or_default();
-    if target.contains("msvc") {
-        for dll in &dlls {
-            let name = dll.file_name().unwrap().to_string_lossy();
-            println!("cargo:rustc-link-arg=/DELAYLOAD:{name}");
-        }
-        println!("cargo:rustc-link-lib=delayimp");
     }
 
     // Generate src that embeds every DLL as a byte slice.
@@ -73,7 +102,7 @@ fn bundle_ffmpeg_dlls(out_path: &Path) {
     std::fs::write(out_path.join("dlls.rs"), code).expect("write dlls.rs");
 
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
-    println!("cargo:rerun-if-changed={}", bin_dir.display());
+    println!("cargo:rerun-if-changed={}", Path::new(&ffmpeg_dir).display());
 }
 
 fn write_empty_bundle(out_path: &Path) {
