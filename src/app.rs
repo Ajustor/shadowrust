@@ -356,8 +356,11 @@ fn handle_action(
                     }
 
                     // ── Save config: device + resolution ─────────────────────
+                    let video_device_name = crate::capture::list_devices()
+                        .into_iter()
+                        .nth(device_index);
                     let new_cfg = AppConfig {
-                        video_device: ui_state.selected_video_device_name(),
+                        video_device: video_device_name,
                         audio_device: ui_state.selected_audio_device_name(),
                         width,
                         height,
@@ -421,6 +424,20 @@ fn handle_action(
                     }
 
                     log::info!("Capture restarted: {width}x{height}@{fps}");
+
+                    // ── Save config ───────────────────────────────────────────
+                    let devices = crate::capture::list_devices();
+                    let new_cfg = AppConfig {
+                        video_device: devices.get(device_index).cloned(),
+                        audio_device: ui_state.selected_audio_device_name(),
+                        width,
+                        height,
+                        fps,
+                        volume: ui_state.volume,
+                        record_path: ui_state.record_path.clone(),
+                    };
+                    AppConfig::save_if_changed(saved_config, &new_cfg).ok();
+                    *saved_config = new_cfg;
                 }
                 Err(e) => log::error!("Failed to restart capture: {e}"),
             }

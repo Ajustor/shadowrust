@@ -35,10 +35,16 @@ pub struct UiState {
 impl UiState {
     pub fn set_device_resolutions(&mut self, resolutions: Vec<DeviceResolution>) {
         self.device_resolutions = resolutions;
+        // Try to restore the saved resolution; fall back to 1080p, then last entry.
         self.selected_resolution_idx = self
             .device_resolutions
             .iter()
-            .rposition(|r| r.height == 1080)
+            .position(|r| r.width == self.width && r.height == self.height)
+            .or_else(|| {
+                self.device_resolutions
+                    .iter()
+                    .rposition(|r| r.height == 1080)
+            })
             .unwrap_or(self.device_resolutions.len().saturating_sub(1));
         if let Some(r) = self.device_resolutions.get(self.selected_resolution_idx) {
             self.width = r.width;
