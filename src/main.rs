@@ -51,10 +51,9 @@ mod dll_bundle {
 
         for (name, bytes) in BUNDLED_DLLS {
             let path = dll_dir.join(name);
-            if !path.exists() {
-                if let Err(e) = std::fs::write(&path, bytes) {
-                    log::error!("Cannot write {path:?}: {e}");
-                }
+            // Always overwrite so updates replace stale DLLs
+            if let Err(e) = std::fs::write(&path, bytes) {
+                log::error!("Cannot write {path:?}: {e}");
             }
         }
 

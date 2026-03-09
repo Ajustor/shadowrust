@@ -105,15 +105,13 @@ jobs:
         shell: pwsh
         run: cargo build --release
 
-      - name: Bundle ffmpeg DLLs
-        shell: pwsh
-        run: Copy-Item "$env:FFMPEG_DIR\bin\*.dll" target\release\
-
       - name: Package release
         shell: pwsh
         run: |
+          # DLLs are embedded in the exe via include_bytes! in build.rs —
+          # no need to ship them separately.
           Compress-Archive `
-            -Path target\release\shadowrust.exe, target\release\*.dll `
+            -Path target\release\shadowrust.exe `
             -DestinationPath shadowrust-windows-x86_64.zip
 
       - uses: actions/upload-artifact@v4
