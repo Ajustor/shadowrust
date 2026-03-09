@@ -118,6 +118,7 @@ jobs:
             "avformat-*.dll",
             "avutil-*.dll",
             "avdevice-*.dll",
+            "avfilter-*.dll",
             "swscale-*.dll",
             "swresample-*.dll"
           )

@@ -36,10 +36,10 @@ fn bundle_ffmpeg_dlls(out_path: &Path) {
     // Covers FFmpeg 6.x and 7.x DLL name variants.
     if target.contains("msvc") {
         const KNOWN_DLL_NAMES: &[&str] = &[
-            // FFmpeg 7.x (BtbN gpl-shared-7.1)
+            // FFmpeg 7.x — library soversions differ from FFmpeg version
             "avcodec-61.dll",
             "avdevice-61.dll",
-            "avfilter-61.dll",
+            "avfilter-10.dll",   // avfilter soversion 10 in FFmpeg 7.x
             "avformat-61.dll",
             "avutil-59.dll",
             "swscale-8.dll",
@@ -47,7 +47,7 @@ fn bundle_ffmpeg_dlls(out_path: &Path) {
             // FFmpeg 6.x
             "avcodec-60.dll",
             "avdevice-60.dll",
-            "avfilter-60.dll",
+            "avfilter-9.dll",    // avfilter soversion 9 in FFmpeg 6.x
             "avformat-60.dll",
             "avutil-58.dll",
             "swscale-7.dll",
@@ -120,13 +120,10 @@ fn write_empty_bundle(out_path: &Path) {
     .expect("write dlls.rs");
 }
 
-/// Collect only the FFmpeg DLLs actually needed for our use case:
-/// avcodec (H.264 encode), avformat (MP4 mux), avutil (shared utils),
-/// swscale (RGBA→YUV pixel conversion), swresample (sample-rate conversion).
-/// avdevice / avfilter / postproc are excluded — we use nokhwa for capture.
+/// Collect FFmpeg DLLs needed at runtime.
 fn find_ffmpeg_dlls(bin_dir: &Path) -> Vec<PathBuf> {
     const NEEDED: &[&str] = &[
-        "avcodec", "avformat", "avutil", "avdevice", "swscale", "swresample",
+        "avcodec", "avformat", "avutil", "avdevice", "avfilter", "swscale", "swresample",
     ];
 
     match std::fs::read_dir(bin_dir) {
