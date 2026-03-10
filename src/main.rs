@@ -30,11 +30,11 @@ mod dll_bundle {
 
     /// Load FFmpeg DLLs before any delay-load stub fires.
     ///
-    /// Strategy: call `AddDllDirectory` + `SetDefaultDllDirectories` to add the
-    /// `libs\` folder to the process-wide DLL search path, then pre-load every
-    /// DLL via `LoadLibraryW`.  This ensures that when one FFmpeg DLL depends
-    /// on another (e.g. avcodec → avutil) the loader resolves the dependency
-    /// from the same `libs\` folder.
+    /// Strategy: call `SetDllDirectoryW` to add the `libs\` folder to the
+    /// standard Windows DLL search path, then pre-load every DLL via
+    /// `LoadLibraryW` with full path.  `SetDllDirectoryW` is critical: when
+    /// loading e.g. `avcodec-61.dll`, its dependency `avutil-59.dll` is
+    /// resolved through the standard search which now includes `libs\`.
     ///
     /// Search order:
     ///   1. `libs\` folder next to the exe  (portable zip distribution)
@@ -49,8 +49,6 @@ mod dll_bundle {
         #[allow(unsafe_code)]
         unsafe extern "system" {
             fn SetDllDirectoryW(lp_path_name: *const u16) -> i32;
-            fn AddDllDirectory(new_directory: *const u16) -> *mut std::ffi::c_void;
-            fn SetDefaultDllDirectories(directory_flags: u32) -> i32;
             fn LoadLibraryW(lp_lib_file_name: *const u16) -> *mut std::ffi::c_void;
         }
 
@@ -58,13 +56,14 @@ mod dll_bundle {
             s.encode_wide().chain(std::iter::once(0u16)).collect()
         }
 
-        /// Add `dir` to the process DLL search path and pre-load every `.dll`
-        /// found inside.  Returns the number of DLLs successfully loaded.
+        /// Set `dir` as an additional DLL search directory and pre-load every
+        /// `.dll` found inside.  Returns the number of DLLs successfully loaded.
         fn preload_dlls_from(dir: &PathBuf) -> usize {
+            // SetDllDirectoryW inserts this directory into the standard DLL
+            // search order, right after the application directory.  This is
+            // essential for transitive dependencies between FFmpeg DLLs
+            // (avcodec → avutil, swscale → avutil, …).
             let wide_dir = to_wide(dir.as_os_str());
-
-            // SetDllDirectoryW adds this directory to the standard DLL search
-            // order (checked right after the application directory).
             let ok = unsafe { SetDllDirectoryW(wide_dir.as_ptr()) };
             if ok == 0 {
                 eprintln!(
@@ -73,33 +72,58 @@ mod dll_bundle {
                 );
             }
 
-            // Also add via AddDllDirectory + SetDefaultDllDirectories for
-            // maximum compatibility (delay-loaded DLLs and their transitive
-            // dependencies both use this path).
-            // LOAD_LIBRARY_SEARCH_DEFAULT_DIRS = 0x1000
-            unsafe {
-                SetDefaultDllDirectories(0x1000);
-                AddDllDirectory(wide_dir.as_ptr());
-            };
-
             let Ok(entries) = std::fs::read_dir(dir) else {
                 eprintln!("[shadowrust] WARNING: cannot read directory {:?}", dir);
                 return 0;
             };
 
+            // Collect DLL paths and sort so that avutil (no deps) is loaded
+            // before avcodec (depends on avutil), etc.
+            let mut dll_paths: Vec<_> = entries
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .ends_with(".dll")
+                })
+                .map(|e| e.path())
+                .collect();
+            dll_paths.sort_by(|a, b| {
+                let na = a.file_name().unwrap().to_string_lossy().to_lowercase();
+                let nb = b.file_name().unwrap().to_string_lossy().to_lowercase();
+                // Load avutil first (everything depends on it), then sw*, then the rest
+                fn priority(name: &str) -> u8 {
+                    if name.starts_with("avutil") {
+                        0
+                    } else if name.starts_with("swresample") {
+                        1
+                    } else if name.starts_with("swscale") {
+                        2
+                    } else if name.starts_with("postproc") {
+                        3
+                    } else if name.starts_with("avcodec") {
+                        4
+                    } else if name.starts_with("avformat") {
+                        5
+                    } else if name.starts_with("avfilter") {
+                        6
+                    } else if name.starts_with("avdevice") {
+                        7
+                    } else {
+                        8
+                    }
+                }
+                priority(&na).cmp(&priority(&nb)).then(na.cmp(&nb))
+            });
+
             let mut loaded = 0usize;
             let mut failed = Vec::new();
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy().to_lowercase();
-                if !name_str.ends_with(".dll") {
-                    continue;
-                }
-                let full = dir.join(&name);
-                let wide = to_wide(full.as_os_str());
+            for path in &dll_paths {
+                let wide = to_wide(path.as_os_str());
                 let handle = unsafe { LoadLibraryW(wide.as_ptr()) };
                 if handle.is_null() {
-                    failed.push(name.to_string_lossy().to_string());
+                    failed.push(path.file_name().unwrap().to_string_lossy().to_string());
                 } else {
                     loaded += 1;
                 }

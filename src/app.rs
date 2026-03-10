@@ -79,24 +79,23 @@ impl ApplicationHandler for App {
             return;
         }
 
+        // Build the window icon BEFORE window creation so the taskbar picks
+        // it up immediately (some Windows versions ignore post-creation updates).
+        let window_icon = {
+            let rgba = crate::icon::make_icon_rgba(64);
+            winit::window::Icon::from_rgba(rgba, 64, 64).ok()
+        };
+
         let window_attrs = Window::default_attributes()
             .with_title("ShadowRust")
-            .with_inner_size(winit::dpi::LogicalSize::new(1920u32, 1080u32));
+            .with_inner_size(winit::dpi::LogicalSize::new(1920u32, 1080u32))
+            .with_window_icon(window_icon);
 
         let window = Arc::new(
             event_loop
                 .create_window(window_attrs)
                 .expect("create window"),
         );
-
-        // Set the window icon (title bar, taskbar, Alt+Tab).
-        // On Windows the EXE icon is embedded separately via winres in build.rs.
-        {
-            let rgba = crate::icon::make_icon_rgba(256);
-            if let Ok(icon) = winit::window::Icon::from_rgba(rgba, 256, 256) {
-                window.set_window_icon(Some(icon));
-            }
-        }
 
         let renderer =
             pollster::block_on(Renderer::new(Arc::clone(&window))).expect("init wgpu renderer");
