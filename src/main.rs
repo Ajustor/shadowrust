@@ -49,8 +49,18 @@ mod dll_bundle {
         #[allow(unsafe_code)]
         unsafe extern "system" {
             fn SetDllDirectoryW(lp_path_name: *const u16) -> i32;
-            fn LoadLibraryW(lp_lib_file_name: *const u16) -> *mut std::ffi::c_void;
+            fn LoadLibraryExW(
+                lp_lib_file_name: *const u16,
+                h_file: *mut std::ffi::c_void,
+                dw_flags: u32,
+            ) -> *mut std::ffi::c_void;
         }
+
+        // LOAD_WITH_ALTERED_SEARCH_PATH: when loading a DLL from an absolute
+        // path, Windows searches that DLL's directory first for its own
+        // dependencies. This means avcodec-61.dll will find avutil-59.dll in
+        // libs\ without any additional SetDllDirectoryW needed.
+        const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x00000008;
 
         // ── Startup log (visible even in windowless GUI mode) ─────────────────
         let log_path: PathBuf = std::env::current_exe()
@@ -146,7 +156,11 @@ mod dll_bundle {
             let mut failed = Vec::new();
             for path in &dll_paths {
                 let wide = to_wide(path.as_os_str());
-                let handle = unsafe { LoadLibraryW(wide.as_ptr()) };
+                // LOAD_WITH_ALTERED_SEARCH_PATH: Windows searches the DLL's own
+                // directory (libs\) for its transitive dependencies automatically.
+                let handle = unsafe {
+                    LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH)
+                };
                 if handle.is_null() {
                     failed.push(path.file_name().unwrap().to_string_lossy().to_string());
                 } else {

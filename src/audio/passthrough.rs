@@ -48,13 +48,32 @@ impl AudioPassthrough {
         let in_cfg = input_device
             .default_input_config()
             .context("no default input config")?;
-        let out_cfg = output_device
-            .default_output_config()
-            .context("no default output config")?;
 
         let in_channels = in_cfg.channels() as usize;
-        let out_channels = out_cfg.channels() as usize;
         let in_rate = in_cfg.sample_rate().0;
+
+        // Try to open the output device at the SAME rate as the input so the
+        // ring buffer doesn't drift.  Most devices support 48 kHz; fall back
+        // to their default if they don't support in_rate.
+        let out_cfg = {
+            let same_rate = output_device
+                .supported_output_configs()
+                .ok()
+                .and_then(|mut it| {
+                    it.find(|c| {
+                        c.min_sample_rate().0 <= in_rate && c.max_sample_rate().0 >= in_rate
+                    })
+                })
+                .map(|r| r.with_sample_rate(cpal::SampleRate(in_rate)));
+            match same_rate {
+                Some(c) => c,
+                None => output_device
+                    .default_output_config()
+                    .context("no default output config")?,
+            }
+        };
+
+        let out_channels = out_cfg.channels() as usize;
         let out_rate = out_cfg.sample_rate().0;
 
         log::info!(

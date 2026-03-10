@@ -83,7 +83,7 @@ impl ApplicationHandler for App {
         // it up immediately (some Windows versions ignore post-creation updates).
         // Use 128×128 for crisp HiDPI taskbar icons on both Linux and Windows.
         let icon_rgba = crate::icon::make_icon_rgba(128);
-        let window_icon = winit::window::Icon::from_rgba(icon_rgba.clone(), 128, 128)
+        let window_icon = winit::window::Icon::from_rgba(icon_rgba, 128, 128)
             .map_err(|e| log::warn!("Icon::from_rgba failed: {e}"))
             .ok();
 
@@ -98,15 +98,46 @@ impl ApplicationHandler for App {
                 .expect("create window"),
         );
 
-        // Re-apply icon after creation — some compositors / Windows versions
-        // only honour the icon once the HWND exists.
-        if window_icon.is_some() {
-            window.set_window_icon(window_icon);
-        } else {
-            // Fallback: try again with a freshly-rendered icon
-            let rgba2 = crate::icon::make_icon_rgba(64);
-            if let Ok(icon2) = winit::window::Icon::from_rgba(rgba2, 64, 64) {
-                window.set_window_icon(Some(icon2));
+        // Re-apply via winit (cross-platform, sets title-bar + alt-tab icon).
+        window.set_window_icon(window_icon);
+
+        // On Windows: also set the taskbar icon by loading the icon directly
+        // from the EXE's embedded PE resource (ID=1, embedded by winres in
+        // build.rs).  The WM_SETICON message updates the button in the taskbar.
+        #[cfg(target_os = "windows")]
+        {
+            use winit::platform::windows::WindowExtWindows;
+
+            #[allow(unsafe_code)]
+            unsafe extern "system" {
+                fn GetModuleHandleW(lp_module_name: *const u16)
+                    -> *mut std::ffi::c_void;
+                fn LoadIconW(
+                    h_instance: *mut std::ffi::c_void,
+                    lp_icon_name: *const u16,
+                ) -> *mut std::ffi::c_void;
+                fn SendMessageW(
+                    h_wnd: *mut std::ffi::c_void,
+                    msg: u32,
+                    w_param: usize,
+                    l_param: isize,
+                ) -> isize;
+            }
+
+            const WM_SETICON: u32 = 0x0080;
+            let hwnd = window.hwnd() as *mut std::ffi::c_void;
+            // GetModuleHandleW(NULL) = handle of the current EXE
+            let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
+            // MAKEINTRESOURCEW(1) = ID 1 (first/only icon embedded by winres)
+            let hicon = unsafe { LoadIconW(hinstance, 1 as *const u16) };
+            if !hicon.is_null() {
+                unsafe {
+                    SendMessageW(hwnd, WM_SETICON, 0 /* ICON_SMALL */, hicon as isize);
+                    SendMessageW(hwnd, WM_SETICON, 1 /* ICON_BIG */, hicon as isize);
+                }
+                log::info!("Windows taskbar icon set from embedded PE resource");
+            } else {
+                log::warn!("LoadIconW(ID=1) returned NULL — check that winres embedded the icon");
             }
         }
 
@@ -131,16 +162,20 @@ impl ApplicationHandler for App {
         let (w, h, fps) = (self.ui_state.width, self.ui_state.height, self.ui_state.fps);
         let devices = crate::capture::list_devices();
         if !devices.is_empty() {
-            // Find saved device by name (case-insensitive substring match), fall back to 0.
+            // Strip the "[N] " index prefix before comparing so the device is
+            // found even if its OS index changes between sessions.
+            fn strip_idx(s: &str) -> &str {
+                s.find(']').map(|i| s[i + 1..].trim()).unwrap_or(s)
+            }
             let device_index = self
                 .ui_state
                 .preferred_video_device
                 .as_deref()
                 .and_then(|pref| {
-                    let pref_lower = pref.to_lowercase();
+                    let pref_name = strip_idx(pref).to_lowercase();
                     devices
                         .iter()
-                        .position(|d| d.to_lowercase().contains(&pref_lower))
+                        .position(|d| strip_idx(d).to_lowercase().contains(&pref_name))
                 })
                 .unwrap_or(0);
 
@@ -148,7 +183,10 @@ impl ApplicationHandler for App {
                 "Auto-starting capture on device {device_index}: {}",
                 devices[device_index]
             );
-            state.resolution_query_rx = Some(spawn_resolution_query(device_index));
+            // NOTE: we do NOT spawn a resolution query here — it would race
+            // with CaptureThread opening the same device, causing the query to
+            // fail and returning an empty resolution list.  The UI settings
+            // panel queries resolutions lazily when the user changes device.
 
             let config = CaptureConfig {
                 device_index,
