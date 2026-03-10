@@ -5,6 +5,10 @@ fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let out_path = Path::new(&out_dir);
 
+    // Always generate dlls.rs first (empty by default) so the include! in
+    // main.rs never fails, regardless of platform or FFMPEG_DIR being set.
+    write_empty_bundle(out_path);
+
     // Generate the application icon as an ICO file and embed it into the
     // Windows EXE via winres. On other platforms only the DLL bundle step runs.
     if target_os == "windows" {
@@ -19,7 +23,6 @@ fn main() {
 
         bundle_ffmpeg_libs(out_path, &target_os);
     } else {
-        write_empty_bundle(out_path);
         bundle_ffmpeg_libs(out_path, &target_os);
 
         // On Linux, set RPATH so the dynamic linker also searches a `libs/`
