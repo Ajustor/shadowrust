@@ -82,21 +82,33 @@ impl ApplicationHandler for App {
         // Build the window icon BEFORE window creation so the taskbar picks
         // it up immediately (some Windows versions ignore post-creation updates).
         // Use 128×128 for crisp HiDPI taskbar icons on both Linux and Windows.
-        let window_icon = {
-            let rgba = crate::icon::make_icon_rgba(128);
-            winit::window::Icon::from_rgba(rgba, 128, 128).ok()
-        };
+        let icon_rgba = crate::icon::make_icon_rgba(128);
+        let window_icon = winit::window::Icon::from_rgba(icon_rgba.clone(), 128, 128)
+            .map_err(|e| log::warn!("Icon::from_rgba failed: {e}"))
+            .ok();
 
         let window_attrs = Window::default_attributes()
             .with_title("ShadowRust")
             .with_inner_size(winit::dpi::LogicalSize::new(1920u32, 1080u32))
-            .with_window_icon(window_icon);
+            .with_window_icon(window_icon.clone());
 
         let window = Arc::new(
             event_loop
                 .create_window(window_attrs)
                 .expect("create window"),
         );
+
+        // Re-apply icon after creation — some compositors / Windows versions
+        // only honour the icon once the HWND exists.
+        if window_icon.is_some() {
+            window.set_window_icon(window_icon);
+        } else {
+            // Fallback: try again with a freshly-rendered icon
+            let rgba2 = crate::icon::make_icon_rgba(64);
+            if let Ok(icon2) = winit::window::Icon::from_rgba(rgba2, 64, 64) {
+                window.set_window_icon(Some(icon2));
+            }
+        }
 
         let renderer =
             pollster::block_on(Renderer::new(Arc::clone(&window))).expect("init wgpu renderer");
@@ -115,15 +127,31 @@ impl ApplicationHandler for App {
             _sleep_inhibitor: SleepInhibitor::new(),
         };
 
-        // Auto-start capture on first available device, like Genki Arcade does.
+        // Auto-start capture, preferring the device saved in config.
         let (w, h, fps) = (self.ui_state.width, self.ui_state.height, self.ui_state.fps);
         let devices = crate::capture::list_devices();
         if !devices.is_empty() {
-            log::info!("Auto-starting capture on device 0: {}", devices[0]);
-            state.resolution_query_rx = Some(spawn_resolution_query(0));
+            // Find saved device by name (case-insensitive substring match), fall back to 0.
+            let device_index = self
+                .ui_state
+                .preferred_video_device
+                .as_deref()
+                .and_then(|pref| {
+                    let pref_lower = pref.to_lowercase();
+                    devices
+                        .iter()
+                        .position(|d| d.to_lowercase().contains(&pref_lower))
+                })
+                .unwrap_or(0);
+
+            log::info!(
+                "Auto-starting capture on device {device_index}: {}",
+                devices[device_index]
+            );
+            state.resolution_query_rx = Some(spawn_resolution_query(device_index));
 
             let config = CaptureConfig {
-                device_index: 0,
+                device_index,
                 width: w,
                 height: h,
                 fps,
@@ -134,10 +162,14 @@ impl ApplicationHandler for App {
                     state.frame_rx = Some(rx);
                     state.capture = Some(thread);
                     self.ui_state.capturing = true;
-                    self.ui_state.selected_device = 0;
+                    self.ui_state.selected_device = device_index;
 
-                    // Audio auto-starts with video
-                    let audio_hint = audio_hint_for_device(&devices[0]);
+                    // Audio auto-starts with video, preferring the saved audio device.
+                    let audio_hint = self
+                        .ui_state
+                        .preferred_audio_device
+                        .clone()
+                        .or_else(|| audio_hint_for_device(&devices[device_index]));
                     match AudioPassthrough::start(audio_hint.as_deref(), self.ui_state.volume) {
                         Ok(audio) => {
                             state.audio = Some(audio);

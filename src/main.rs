@@ -30,11 +30,10 @@ mod dll_bundle {
 
     /// Load FFmpeg DLLs before any delay-load stub fires.
     ///
-    /// Strategy: call `SetDllDirectoryW` to add the `libs\` folder to the
-    /// standard Windows DLL search path, then pre-load every DLL via
-    /// `LoadLibraryW` with full path.  `SetDllDirectoryW` is critical: when
-    /// loading e.g. `avcodec-61.dll`, its dependency `avutil-59.dll` is
-    /// resolved through the standard search which now includes `libs\`.
+    /// In release GUI mode (windows_subsystem = "windows") there is no console,
+    /// so all diagnostics are written to a startup log file next to the exe
+    /// (or in %TEMP% as a fallback).  Check `shadowrust-startup.log` to debug
+    /// DLL loading problems.
     ///
     /// Search order:
     ///   1. `libs\` folder next to the exe  (portable zip distribution)
@@ -43,6 +42,7 @@ mod dll_bundle {
     #[cfg(windows)]
     pub fn setup() {
         use std::ffi::OsStr;
+        use std::io::Write as _;
         use std::os::windows::ffi::OsStrExt;
         use std::path::PathBuf;
 
@@ -52,28 +52,62 @@ mod dll_bundle {
             fn LoadLibraryW(lp_lib_file_name: *const u16) -> *mut std::ffi::c_void;
         }
 
+        // ── Startup log (visible even in windowless GUI mode) ─────────────────
+        let log_path: PathBuf = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("shadowrust-startup.log")))
+            .unwrap_or_else(|| std::env::temp_dir().join("shadowrust-startup.log"));
+
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&log_path)
+            .ok();
+
+        macro_rules! dll_log {
+            ($($arg:tt)*) => {
+                let msg = format!($($arg)*);
+                eprintln!("{msg}");
+                if let Some(ref mut f) = log {
+                    let _ = writeln!(f, "{msg}");
+                }
+            };
+        }
+
+        dll_log!("[shadowrust] dll_bundle::setup() — log: {log_path:?}");
+
         fn to_wide(s: &OsStr) -> Vec<u16> {
             s.encode_wide().chain(std::iter::once(0u16)).collect()
         }
 
         /// Set `dir` as an additional DLL search directory and pre-load every
         /// `.dll` found inside.  Returns the number of DLLs successfully loaded.
-        fn preload_dlls_from(dir: &PathBuf) -> usize {
-            // SetDllDirectoryW inserts this directory into the standard DLL
-            // search order, right after the application directory.  This is
-            // essential for transitive dependencies between FFmpeg DLLs
-            // (avcodec → avutil, swscale → avutil, …).
+        fn preload_dlls_from(dir: &PathBuf, log: &mut Option<std::fs::File>) -> usize {
+            use std::io::Write as _;
+
+            macro_rules! plog {
+                ($($arg:tt)*) => {
+                    let msg = format!($($arg)*);
+                    eprintln!("{msg}");
+                    if let Some(ref mut f) = *log {
+                        let _ = writeln!(f, "{msg}");
+                    }
+                };
+            }
+
+            // SetDllDirectoryW adds this folder to the standard search order so
+            // transitive dependencies (avcodec → avutil, etc.) can be resolved.
             let wide_dir = to_wide(dir.as_os_str());
             let ok = unsafe { SetDllDirectoryW(wide_dir.as_ptr()) };
             if ok == 0 {
-                eprintln!(
-                    "[shadowrust] WARNING: SetDllDirectoryW failed for {:?}",
-                    dir
-                );
+                plog!("[shadowrust] WARNING: SetDllDirectoryW({dir:?}) failed");
+            } else {
+                plog!("[shadowrust] SetDllDirectoryW({dir:?}) OK");
             }
 
             let Ok(entries) = std::fs::read_dir(dir) else {
-                eprintln!("[shadowrust] WARNING: cannot read directory {:?}", dir);
+                plog!("[shadowrust] ERROR: cannot read directory {dir:?}");
                 return 0;
             };
 
@@ -92,30 +126,21 @@ mod dll_bundle {
             dll_paths.sort_by(|a, b| {
                 let na = a.file_name().unwrap().to_string_lossy().to_lowercase();
                 let nb = b.file_name().unwrap().to_string_lossy().to_lowercase();
-                // Load avutil first (everything depends on it), then sw*, then the rest
                 fn priority(name: &str) -> u8 {
-                    if name.starts_with("avutil") {
-                        0
-                    } else if name.starts_with("swresample") {
-                        1
-                    } else if name.starts_with("swscale") {
-                        2
-                    } else if name.starts_with("postproc") {
-                        3
-                    } else if name.starts_with("avcodec") {
-                        4
-                    } else if name.starts_with("avformat") {
-                        5
-                    } else if name.starts_with("avfilter") {
-                        6
-                    } else if name.starts_with("avdevice") {
-                        7
-                    } else {
-                        8
-                    }
+                    if name.starts_with("avutil") { 0 }
+                    else if name.starts_with("swresample") { 1 }
+                    else if name.starts_with("swscale") { 2 }
+                    else if name.starts_with("postproc") { 3 }
+                    else if name.starts_with("avcodec") { 4 }
+                    else if name.starts_with("avformat") { 5 }
+                    else if name.starts_with("avfilter") { 6 }
+                    else if name.starts_with("avdevice") { 7 }
+                    else { 8 }
                 }
                 priority(&na).cmp(&priority(&nb)).then(na.cmp(&nb))
             });
+
+            plog!("[shadowrust] Found {} DLL(s) in {dir:?}", dll_paths.len());
 
             let mut loaded = 0usize;
             let mut failed = Vec::new();
@@ -129,12 +154,13 @@ mod dll_bundle {
                 }
             }
             if !failed.is_empty() {
-                eprintln!(
+                plog!(
                     "[shadowrust] WARNING: failed to load {} DLL(s): {}",
                     failed.len(),
                     failed.join(", ")
                 );
             }
+            plog!("[shadowrust] Loaded {loaded}/{} DLL(s) from {dir:?}", dll_paths.len());
             loaded
         }
 
@@ -145,19 +171,21 @@ mod dll_bundle {
         // ── 1. libs\ next to the exe ─────────────────────────────────────────
         if let Some(ref exe_dir) = exe_dir {
             let libs_dir = exe_dir.join("libs");
+            dll_log!("[shadowrust] Checking libs\\ at {libs_dir:?} — exists: {}", libs_dir.is_dir());
             if libs_dir.is_dir() {
-                let n = preload_dlls_from(&libs_dir);
+                let n = preload_dlls_from(&libs_dir, &mut log);
                 if n > 0 {
-                    eprintln!("[shadowrust] Loaded {n} DLL(s) from {libs_dir:?}");
+                    dll_log!("[shadowrust] ✓ Loaded {n} DLL(s) from libs\\ {libs_dir:?}");
                     return;
                 }
-                eprintln!(
-                    "[shadowrust] WARNING: libs\\ folder found but no DLLs loaded from {libs_dir:?}"
+                dll_log!(
+                    "[shadowrust] WARNING: libs\\ found but no DLLs loaded from {libs_dir:?}"
                 );
             }
         }
 
         // ── 2. Embedded bytes → extract then pre-load ────────────────────────
+        dll_log!("[shadowrust] Embedded DLLs count: {}", BUNDLED_DLLS.len());
         if !BUNDLED_DLLS.is_empty() {
             let dll_dir = std::env::var("LOCALAPPDATA")
                 .map(PathBuf::from)
@@ -166,18 +194,18 @@ mod dll_bundle {
                 .join("dlls");
 
             if let Err(e) = std::fs::create_dir_all(&dll_dir) {
-                eprintln!("[shadowrust] ERROR: Cannot create DLL dir {dll_dir:?}: {e}");
+                dll_log!("[shadowrust] ERROR: Cannot create DLL dir {dll_dir:?}: {e}");
             } else {
                 for (name, bytes) in BUNDLED_DLLS {
                     let path = dll_dir.join(name);
                     if let Err(e) = std::fs::write(&path, bytes) {
-                        eprintln!("[shadowrust] ERROR: Cannot write {path:?}: {e}");
+                        dll_log!("[shadowrust] ERROR: Cannot write {path:?}: {e}");
                     }
                 }
 
-                let n = preload_dlls_from(&dll_dir);
+                let n = preload_dlls_from(&dll_dir, &mut log);
                 if n > 0 {
-                    eprintln!("[shadowrust] Loaded {n} embedded DLL(s) from {dll_dir:?}");
+                    dll_log!("[shadowrust] ✓ Loaded {n} embedded DLL(s) from {dll_dir:?}");
                     return;
                 }
             }
@@ -185,16 +213,16 @@ mod dll_bundle {
 
         // ── 3. Flat layout: DLLs next to the exe (no libs\ subfolder) ───────
         if let Some(ref exe_dir) = exe_dir {
-            let n = preload_dlls_from(exe_dir);
+            let n = preload_dlls_from(exe_dir, &mut log);
             if n > 0 {
-                eprintln!("[shadowrust] Loaded {n} DLL(s) from exe directory {exe_dir:?}");
+                dll_log!("[shadowrust] ✓ Loaded {n} DLL(s) from exe directory {exe_dir:?}");
                 return;
             }
         }
 
-        eprintln!(
-            "[shadowrust] WARNING: No FFmpeg DLLs found — \
-             place them in libs\\ next to the exe or set FFMPEG_DIR at build time."
+        dll_log!(
+            "[shadowrust] ERROR: No FFmpeg DLLs found anywhere. \
+             Place them in libs\\ next to the exe."
         );
     }
 
