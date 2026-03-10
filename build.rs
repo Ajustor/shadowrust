@@ -39,17 +39,19 @@ fn bundle_ffmpeg_dlls(out_path: &Path) {
             // FFmpeg 7.x — library soversions differ from FFmpeg version
             "avcodec-61.dll",
             "avdevice-61.dll",
-            "avfilter-10.dll",   // avfilter soversion 10 in FFmpeg 7.x
+            "avfilter-10.dll", // avfilter soversion 10 in FFmpeg 7.x
             "avformat-61.dll",
             "avutil-59.dll",
+            "postproc-58.dll", // postproc soversion 58 in FFmpeg 7.x
             "swscale-8.dll",
             "swresample-5.dll",
             // FFmpeg 6.x
             "avcodec-60.dll",
             "avdevice-60.dll",
-            "avfilter-9.dll",    // avfilter soversion 9 in FFmpeg 6.x
+            "avfilter-9.dll", // avfilter soversion 9 in FFmpeg 6.x
             "avformat-60.dll",
             "avutil-58.dll",
+            "postproc-57.dll", // postproc soversion 57 in FFmpeg 6.x
             "swscale-7.dll",
             "swresample-4.dll",
         ];
@@ -91,19 +93,39 @@ fn bundle_ffmpeg_dlls(out_path: &Path) {
         return;
     }
 
-    // Generate src that embeds every DLL as a byte slice.
-    let mut code =
-        String::from("#[allow(dead_code)]\npub static BUNDLED_DLLS: &[(&str, &[u8])] = &[\n");
-    for dll in &dlls {
-        let name = dll.file_name().unwrap().to_string_lossy();
-        // Use forward slashes so the path is valid in both Rust string and
-        // include_bytes! regardless of host quoting rules.
-        let forward = dll.to_str().unwrap().replace('\\', "/");
-        code += &format!("    ({name:?}, include_bytes!({forward:?})),\n");
-    }
-    code += "];\n";
+    // Copy DLLs into a `libs/` folder next to the final binary instead of
+    // embedding them — this keeps the exe lightweight.  The `dll_bundle::setup()`
+    // function in main.rs already pre-loads DLLs from this directory.
+    //
+    // OUT_DIR looks like: target/{profile}/build/{crate}-{hash}/out
+    // We go 3 levels up to reach the profile directory (target/{profile}/).
+    let target_profile_dir = out_path
+        .ancestors()
+        .nth(3)
+        .expect("cannot derive target profile dir from OUT_DIR");
+    let libs_dir = target_profile_dir.join("libs");
+    std::fs::create_dir_all(&libs_dir).expect("create libs dir");
 
-    std::fs::write(out_path.join("dlls.rs"), code).expect("write dlls.rs");
+    for dll in &dlls {
+        let name = dll.file_name().unwrap();
+        let dest = libs_dir.join(name);
+        if let Err(e) = std::fs::copy(dll, &dest) {
+            eprintln!(
+                "cargo:warning=Failed to copy {} → {}: {e}",
+                dll.display(),
+                dest.display()
+            );
+        } else {
+            eprintln!(
+                "cargo:warning=Copied {} → libs/{}",
+                dll.display(),
+                name.to_string_lossy()
+            );
+        }
+    }
+
+    // No longer embed DLLs — the exe stays small.
+    write_empty_bundle(out_path);
 
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
     println!(
@@ -123,7 +145,14 @@ fn write_empty_bundle(out_path: &Path) {
 /// Collect FFmpeg DLLs needed at runtime.
 fn find_ffmpeg_dlls(bin_dir: &Path) -> Vec<PathBuf> {
     const NEEDED: &[&str] = &[
-        "avcodec", "avformat", "avutil", "avdevice", "avfilter", "swscale", "swresample",
+        "avcodec",
+        "avformat",
+        "avutil",
+        "avdevice",
+        "avfilter",
+        "postproc",
+        "swscale",
+        "swresample",
     ];
 
     match std::fs::read_dir(bin_dir) {
