@@ -28,8 +28,11 @@ fn main() {
         // On Linux, set RPATH so the dynamic linker also searches a `libs/`
         // directory next to the executable.  $ORIGIN is expanded at runtime to
         // the directory containing the EXE.
+        // We use --disable-new-dtags to set DT_RPATH instead of DT_RUNPATH.
+        // RPATH is inherited by transitive dependencies (e.g. libswresample
+        // loaded by libavformat) whereas RUNPATH only applies to direct deps.
         if target_os == "linux" {
-            println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/libs");
+            println!("cargo:rustc-link-arg=-Wl,--disable-new-dtags,-rpath,$ORIGIN/libs");
         }
     }
 }
