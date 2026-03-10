@@ -20,6 +20,13 @@ fn main() {
         bundle_ffmpeg_dlls(out_path);
     } else {
         write_empty_bundle(out_path);
+
+        // On Linux, set RPATH so the dynamic linker also searches a `libs/`
+        // directory next to the executable.  $ORIGIN is expanded at runtime to
+        // the directory containing the EXE.
+        if target_os == "linux" {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/libs");
+        }
     }
 }
 

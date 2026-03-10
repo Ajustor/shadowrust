@@ -30,10 +30,11 @@ mod dll_bundle {
 
     /// Load FFmpeg DLLs before any delay-load stub fires.
     ///
-    /// Strategy: pre-load every DLL by its **full absolute path** via
-    /// `LoadLibraryExW`. Windows caches loaded modules by name, so when the
-    /// delay-load stub later calls `LoadLibrary("avcodec-61.dll")` it gets the
-    /// already-loaded module — no search-path games needed.
+    /// Strategy: call `SetDllDirectoryW` to add the `libs\` folder to the
+    /// process-wide DLL search path, then pre-load every DLL via
+    /// `LoadLibraryW`. `SetDllDirectoryW` is critical: it ensures that when
+    /// one FFmpeg DLL depends on another (e.g. avcodec → avutil) the loader
+    /// resolves the dependency from the same `libs\` folder.
     ///
     /// Search order:
     ///   1. `libs\` folder next to the exe  (zip distribution)
@@ -46,18 +47,30 @@ mod dll_bundle {
 
         #[allow(unsafe_code)]
         unsafe extern "system" {
-            fn LoadLibraryExW(
-                lp_lib_file_name: *const u16,
-                h_file: *mut std::ffi::c_void,
-                dw_flags: u32,
-            ) -> *mut std::ffi::c_void;
+            fn SetDllDirectoryW(lp_path_name: *const u16) -> i32;
+            fn LoadLibraryW(lp_lib_file_name: *const u16) -> *mut std::ffi::c_void;
         }
 
         fn to_wide(s: &OsStr) -> Vec<u16> {
             s.encode_wide().chain(std::iter::once(0u16)).collect()
         }
 
+        /// Add `dir` to the process DLL search path and pre-load every `.dll`
+        /// found inside.  Returns the number of DLLs successfully loaded.
         fn preload_dlls_from(dir: &PathBuf) -> usize {
+            // SetDllDirectoryW adds this directory to the Windows DLL search
+            // order.  This is essential: FFmpeg DLLs have inter-dependencies
+            // (avcodec → avutil, swscale → avutil, …) and without the
+            // directory on the search path those transitive deps fail.
+            let wide_dir = to_wide(dir.as_os_str());
+            let ok = unsafe { SetDllDirectoryW(wide_dir.as_ptr()) };
+            if ok == 0 {
+                eprintln!(
+                    "[shadowrust] WARNING: SetDllDirectoryW failed for {:?}",
+                    dir
+                );
+            }
+
             let Ok(entries) = std::fs::read_dir(dir) else {
                 return 0;
             };
@@ -70,9 +83,7 @@ mod dll_bundle {
                 }
                 let full = dir.join(&name);
                 let wide = to_wide(full.as_os_str());
-                // LOAD_WITH_ALTERED_SEARCH_PATH = 0x8 — uses the DLL's own
-                // directory as base for any of its own imports.
-                let handle = unsafe { LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), 0x8) };
+                let handle = unsafe { LoadLibraryW(wide.as_ptr()) };
                 if handle.is_null() {
                     eprintln!("[shadowrust] WARNING: could not load {:?}", full);
                 } else {
