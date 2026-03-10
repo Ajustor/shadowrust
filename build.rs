@@ -149,14 +149,17 @@ fn bundle_ffmpeg_libs(out_path: &Path, target_os: &str) {
 
 /// Collect FFmpeg shared libraries from the given search directories.
 ///
-/// On **Windows**: collects ALL `.dll` files from the first directory that
-/// contains any.  This ensures FFmpeg's own dependency DLLs (zlib, etc.) are
-/// also included, making the distribution fully self-contained.
-///
-/// On **Linux**: collects versioned `.so.{N}` files matching known FFmpeg
-/// library prefixes.
+/// Only copies libraries whose name matches a known FFmpeg library prefix.
+/// This keeps the distribution as small as possible while remaining functional.
 fn find_ffmpeg_libs(search_dirs: &[PathBuf], target_os: &str) -> Vec<PathBuf> {
-    const NEEDED_LINUX: &[&str] = &[
+    // FFmpeg library prefixes required at runtime.
+    // These cover all libraries that ffmpeg-next may load:
+    //   - avcodec, avformat, avutil      — core encoding / muxing / utilities
+    //   - swscale, swresample            — pixel & audio format conversion
+    //   - avdevice                       — device I/O (linked by ffmpeg-sys)
+    //   - avfilter                       — filter graph (linked by ffmpeg-sys)
+    //   - postproc                       — post-processing (linked by ffmpeg-sys)
+    const NEEDED: &[&str] = &[
         "avcodec",
         "avformat",
         "avutil",
@@ -177,12 +180,12 @@ fn find_ffmpeg_libs(search_dirs: &[PathBuf], target_os: &str) -> Vec<PathBuf> {
                 let n = e.file_name();
                 let n = n.to_string_lossy().to_lowercase();
                 if target_os == "windows" {
-                    // Grab ALL .dll files — FFmpeg DLLs plus any dependency DLLs
-                    // that FFmpeg itself needs (e.g. zlib1.dll).  Exclude .exe files.
-                    n.ends_with(".dll")
+                    // Windows DLLs: avcodec-61.dll, postproc-59.dll, …
+                    n.ends_with(".dll") && NEEDED.iter().any(|p| n.starts_with(p))
                 } else {
-                    // Linux: match lib{name}.so.{version} (real files, not bare .so symlinks)
-                    NEEDED_LINUX.iter().any(|p| {
+                    // Linux .so: libavcodec.so.61, libpostproc.so.59, …
+                    // Match versioned files only (not bare .so symlinks).
+                    NEEDED.iter().any(|p| {
                         let prefix = format!("lib{p}.so.");
                         n.starts_with(&prefix)
                             && n[prefix.len()..]
