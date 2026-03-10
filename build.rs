@@ -17,9 +17,10 @@ fn main() {
         res.set_icon(ico_path.to_str().unwrap());
         res.compile().expect("compile Windows resources");
 
-        bundle_ffmpeg_dlls(out_path);
+        bundle_ffmpeg_libs(out_path, &target_os);
     } else {
         write_empty_bundle(out_path);
+        bundle_ffmpeg_libs(out_path, &target_os);
 
         // On Linux, set RPATH so the dynamic linker also searches a `libs/`
         // directory next to the executable.  $ORIGIN is expanded at runtime to
@@ -30,35 +31,32 @@ fn main() {
     }
 }
 
-/// On Windows targets: find FFmpeg DLLs in $FFMPEG_DIR/bin, embed them via
-/// include_bytes! and add /DELAYLOAD linker flags so Windows resolves the
-/// DLLs lazily (after our main() has had a chance to call SetDllDirectoryW).
-fn bundle_ffmpeg_dlls(out_path: &Path) {
+/// Find FFmpeg shared libraries in $FFMPEG_DIR and copy them into `libs/`
+/// next to the final binary.  On Windows, also add /DELAYLOAD linker flags.
+fn bundle_ffmpeg_libs(out_path: &Path, target_os: &str) {
     let target = std::env::var("TARGET").unwrap_or_default();
 
     // /DELAYLOAD makes the Windows PE loader resolve FFmpeg DLLs on first call
     // instead of at process start, giving main() time to call SetDllDirectoryW.
-    // We always apply this on MSVC — it's safe even if a name doesn't match any
-    // linked import library; the linker simply ignores the unmatched entry.
-    // Covers FFmpeg 6.x and 7.x DLL name variants.
     if target.contains("msvc") {
         const KNOWN_DLL_NAMES: &[&str] = &[
             // FFmpeg 7.x — library soversions differ from FFmpeg version
             "avcodec-61.dll",
             "avdevice-61.dll",
-            "avfilter-10.dll", // avfilter soversion 10 in FFmpeg 7.x
+            "avfilter-10.dll",
             "avformat-61.dll",
             "avutil-59.dll",
-            "postproc-58.dll", // postproc soversion 58 in FFmpeg 7.x
+            "postproc-59.dll",
+            "postproc-58.dll",
             "swscale-8.dll",
             "swresample-5.dll",
             // FFmpeg 6.x
             "avcodec-60.dll",
             "avdevice-60.dll",
-            "avfilter-9.dll", // avfilter soversion 9 in FFmpeg 6.x
+            "avfilter-9.dll",
             "avformat-60.dll",
             "avutil-58.dll",
-            "postproc-57.dll", // postproc soversion 57 in FFmpeg 6.x
+            "postproc-57.dll",
             "swscale-7.dll",
             "swresample-4.dll",
         ];
@@ -70,40 +68,45 @@ fn bundle_ffmpeg_dlls(out_path: &Path) {
 
     let ffmpeg_dir = std::env::var("FFMPEG_DIR").unwrap_or_default();
 
-    if ffmpeg_dir.is_empty() {
+    // On Linux, if FFMPEG_DIR is not set, try to find libs in standard system
+    // paths (pkg-config already told the linker where to find them, but we
+    // also want to copy them into libs/ for a self-contained distribution).
+    let search_dirs: Vec<PathBuf> = if !ffmpeg_dir.is_empty() {
+        let base = PathBuf::from(&ffmpeg_dir);
+        if target_os == "windows" {
+            // Windows: DLLs live in bin/ or at the root
+            vec![base.join("bin"), base.clone()]
+        } else {
+            // Linux/macOS: .so live in lib/ or lib64/ or at the root
+            vec![base.join("lib"), base.join("lib64"), base.clone()]
+        }
+    } else if target_os != "windows" {
+        // Try common system paths on Linux
+        vec![
+            PathBuf::from("/usr/lib/x86_64-linux-gnu"),
+            PathBuf::from("/usr/lib64"),
+            PathBuf::from("/usr/lib"),
+            PathBuf::from("/usr/local/lib"),
+        ]
+    } else {
         eprintln!(
-            "cargo:warning=FFMPEG_DIR not set — FFmpeg DLLs will NOT be embedded. \
+            "cargo:warning=FFMPEG_DIR not set — FFmpeg DLLs will NOT be bundled. \
              Place the FFmpeg 7.x DLLs next to the exe or on PATH at runtime."
         );
-        write_empty_bundle(out_path);
         return;
-    }
-
-    // Try $FFMPEG_DIR/bin first, then $FFMPEG_DIR directly (some layouts keep
-    // DLLs at the root of the FFmpeg directory).
-    let bin_dir = Path::new(&ffmpeg_dir).join("bin");
-    let dlls = {
-        let from_bin = find_ffmpeg_dlls(&bin_dir);
-        if from_bin.is_empty() {
-            find_ffmpeg_dlls(Path::new(&ffmpeg_dir))
-        } else {
-            from_bin
-        }
     };
 
-    if dlls.is_empty() {
+    let libs = find_ffmpeg_libs(&search_dirs, target_os);
+
+    if libs.is_empty() {
         eprintln!(
-            "cargo:warning=No FFmpeg DLLs found in {bin_dir:?} — they will not be embedded. \
-             The app will still start; place DLLs next to the exe or on PATH."
+            "cargo:warning=No FFmpeg shared libraries found in {search_dirs:?} — \
+             they will not be copied to libs/."
         );
-        write_empty_bundle(out_path);
         return;
     }
 
-    // Copy DLLs into a `libs/` folder next to the final binary instead of
-    // embedding them — this keeps the exe lightweight.  The `dll_bundle::setup()`
-    // function in main.rs already pre-loads DLLs from this directory.
-    //
+    // Copy libs into a `libs/` folder next to the final binary.
     // OUT_DIR looks like: target/{profile}/build/{crate}-{hash}/out
     // We go 3 levels up to reach the profile directory (target/{profile}/).
     let target_profile_dir = out_path
@@ -113,44 +116,55 @@ fn bundle_ffmpeg_dlls(out_path: &Path) {
     let libs_dir = target_profile_dir.join("libs");
     std::fs::create_dir_all(&libs_dir).expect("create libs dir");
 
-    for dll in &dlls {
-        let name = dll.file_name().unwrap();
+    for lib in &libs {
+        let name = lib.file_name().unwrap();
         let dest = libs_dir.join(name);
-        if let Err(e) = std::fs::copy(dll, &dest) {
+        if let Err(e) = std::fs::copy(lib, &dest) {
             eprintln!(
                 "cargo:warning=Failed to copy {} → {}: {e}",
-                dll.display(),
+                lib.display(),
                 dest.display()
             );
         } else {
             eprintln!(
                 "cargo:warning=Copied {} → libs/{}",
-                dll.display(),
+                lib.display(),
                 name.to_string_lossy()
             );
         }
     }
 
-    // No longer embed DLLs — the exe stays small.
-    write_empty_bundle(out_path);
+    // On Linux, also create the unversioned symlinks that the dynamic linker
+    // may need (e.g. libavcodec.so → libavcodec.so.61).
+    if target_os == "linux" {
+        for lib in &libs {
+            let name = lib.file_name().unwrap().to_string_lossy();
+            // From "libavcodec.so.61" create symlink "libavcodec.so"
+            if let Some(base) = name.split(".so.").next() {
+                let link_name = format!("{base}.so");
+                let link_path = libs_dir.join(&link_name);
+                if !link_path.exists() {
+                    #[cfg(unix)]
+                    {
+                        let _ = std::os::unix::fs::symlink(name.as_ref(), &link_path);
+                    }
+                }
+            }
+        }
+    }
 
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
-    println!(
-        "cargo:rerun-if-changed={}",
-        Path::new(&ffmpeg_dir).display()
-    );
+    if !ffmpeg_dir.is_empty() {
+        println!(
+            "cargo:rerun-if-changed={}",
+            Path::new(&ffmpeg_dir).display()
+        );
+    }
 }
 
-fn write_empty_bundle(out_path: &Path) {
-    std::fs::write(
-        out_path.join("dlls.rs"),
-        "#[allow(dead_code)]\npub static BUNDLED_DLLS: &[(&str, &[u8])] = &[];\n",
-    )
-    .expect("write dlls.rs");
-}
-
-/// Collect FFmpeg DLLs needed at runtime.
-fn find_ffmpeg_dlls(bin_dir: &Path) -> Vec<PathBuf> {
+/// Collect FFmpeg shared libraries from the given search directories.
+/// On Windows matches `.dll` files; on Linux matches `.so` / `.so.*` files.
+fn find_ffmpeg_libs(search_dirs: &[PathBuf], target_os: &str) -> Vec<PathBuf> {
     const NEEDED: &[&str] = &[
         "avcodec",
         "avformat",
@@ -162,21 +176,49 @@ fn find_ffmpeg_dlls(bin_dir: &Path) -> Vec<PathBuf> {
         "swresample",
     ];
 
-    match std::fs::read_dir(bin_dir) {
-        Ok(entries) => entries
+    for dir in search_dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        let found: Vec<PathBuf> = entries
             .filter_map(|e| e.ok())
             .filter(|e| {
+                // Skip symlinks — we only want the real versioned files
+                // (we'll create our own symlinks later on Linux).
                 let n = e.file_name();
                 let n = n.to_string_lossy().to_lowercase();
-                n.ends_with(".dll") && NEEDED.iter().any(|p| n.starts_with(p))
+                if target_os == "windows" {
+                    // e.g. avcodec-61.dll, postproc-59.dll
+                    n.ends_with(".dll") && NEEDED.iter().any(|p| n.starts_with(p))
+                } else {
+                    // e.g. libavcodec.so.61, libpostproc.so.59
+                    // Match: lib{name}.so.{version} (the real file, not bare .so symlink)
+                    NEEDED.iter().any(|p| {
+                        let prefix = format!("lib{p}.so.");
+                        n.starts_with(&prefix)
+                            && n[prefix.len()..]
+                                .chars()
+                                .next()
+                                .map_or(false, |c| c.is_ascii_digit())
+                    })
+                }
             })
             .map(|e| e.path())
-            .collect(),
-        Err(err) => {
-            eprintln!("cargo:warning=Cannot read {bin_dir:?}: {err}");
-            vec![]
+            .collect();
+
+        if !found.is_empty() {
+            return found;
         }
     }
+    vec![]
+}
+
+fn write_empty_bundle(out_path: &Path) {
+    std::fs::write(
+        out_path.join("dlls.rs"),
+        "#[allow(dead_code)]\npub static BUNDLED_DLLS: &[(&str, &[u8])] = &[];\n",
+    )
+    .expect("write dlls.rs");
 }
 
 // ── Icon generation ───────────────────────────────────────────────────────────
