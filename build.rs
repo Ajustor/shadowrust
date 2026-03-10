@@ -35,68 +35,36 @@ fn main() {
 }
 
 /// Find FFmpeg shared libraries in $FFMPEG_DIR and copy them into `libs/`
-/// next to the final binary.  On Windows, also add /DELAYLOAD linker flags.
+/// next to the final binary.  On Windows, also add /DELAYLOAD linker flags
+/// dynamically based on the actual DLLs found.
 fn bundle_ffmpeg_libs(out_path: &Path, target_os: &str) {
     let target = std::env::var("TARGET").unwrap_or_default();
-
-    // /DELAYLOAD makes the Windows PE loader resolve FFmpeg DLLs on first call
-    // instead of at process start, giving main() time to call SetDllDirectoryW.
-    if target.contains("msvc") {
-        const KNOWN_DLL_NAMES: &[&str] = &[
-            // FFmpeg 7.x — library soversions differ from FFmpeg version
-            "avcodec-61.dll",
-            "avdevice-61.dll",
-            "avfilter-10.dll",
-            "avformat-61.dll",
-            "avutil-59.dll",
-            "postproc-59.dll",
-            "postproc-58.dll",
-            "swscale-8.dll",
-            "swresample-5.dll",
-            // FFmpeg 6.x
-            "avcodec-60.dll",
-            "avdevice-60.dll",
-            "avfilter-9.dll",
-            "avformat-60.dll",
-            "avutil-58.dll",
-            "postproc-57.dll",
-            "swscale-7.dll",
-            "swresample-4.dll",
-        ];
-        for name in KNOWN_DLL_NAMES {
-            println!("cargo:rustc-link-arg=/DELAYLOAD:{name}");
-        }
-        println!("cargo:rustc-link-lib=delayimp");
-    }
-
     let ffmpeg_dir = std::env::var("FFMPEG_DIR").unwrap_or_default();
 
-    // On Linux, if FFMPEG_DIR is not set, try to find libs in standard system
-    // paths (pkg-config already told the linker where to find them, but we
-    // also want to copy them into libs/ for a self-contained distribution).
+    if target_os == "windows" && ffmpeg_dir.is_empty() {
+        eprintln!(
+            "cargo:warning=FFMPEG_DIR not set — FFmpeg DLLs will NOT be bundled. \
+             Set FFMPEG_DIR to your FFmpeg directory for a portable build."
+        );
+        return;
+    }
+
+    // Build search directories
     let search_dirs: Vec<PathBuf> = if !ffmpeg_dir.is_empty() {
         let base = PathBuf::from(&ffmpeg_dir);
         if target_os == "windows" {
-            // Windows: DLLs live in bin/ or at the root
             vec![base.join("bin"), base.clone()]
         } else {
-            // Linux/macOS: .so live in lib/ or lib64/ or at the root
             vec![base.join("lib"), base.join("lib64"), base.clone()]
         }
-    } else if target_os != "windows" {
-        // Try common system paths on Linux
+    } else {
+        // Linux: try common system paths
         vec![
             PathBuf::from("/usr/lib/x86_64-linux-gnu"),
             PathBuf::from("/usr/lib64"),
             PathBuf::from("/usr/lib"),
             PathBuf::from("/usr/local/lib"),
         ]
-    } else {
-        eprintln!(
-            "cargo:warning=FFMPEG_DIR not set — FFmpeg DLLs will NOT be bundled. \
-             Place the FFmpeg 7.x DLLs next to the exe or on PATH at runtime."
-        );
-        return;
     };
 
     let libs = find_ffmpeg_libs(&search_dirs, target_os);
@@ -109,6 +77,19 @@ fn bundle_ffmpeg_libs(out_path: &Path, target_os: &str) {
         return;
     }
 
+    // On Windows MSVC: add /DELAYLOAD for every FFmpeg DLL we actually found.
+    // This is critical — the delay-load stub defers loading until after main()
+    // has called SetDllDirectoryW, so the loader can find libs\ at runtime.
+    if target_os == "windows" && target.contains("msvc") {
+        for lib in &libs {
+            let name = lib.file_name().unwrap().to_string_lossy();
+            if name.to_lowercase().ends_with(".dll") {
+                println!("cargo:rustc-link-arg=/DELAYLOAD:{name}");
+            }
+        }
+        println!("cargo:rustc-link-lib=delayimp");
+    }
+
     // Copy libs into a `libs/` folder next to the final binary.
     // OUT_DIR looks like: target/{profile}/build/{crate}-{hash}/out
     // We go 3 levels up to reach the profile directory (target/{profile}/).
@@ -119,6 +100,7 @@ fn bundle_ffmpeg_libs(out_path: &Path, target_os: &str) {
     let libs_dir = target_profile_dir.join("libs");
     std::fs::create_dir_all(&libs_dir).expect("create libs dir");
 
+    let mut copied = 0usize;
     for lib in &libs {
         let name = lib.file_name().unwrap();
         let dest = libs_dir.join(name);
@@ -129,20 +111,20 @@ fn bundle_ffmpeg_libs(out_path: &Path, target_os: &str) {
                 dest.display()
             );
         } else {
-            eprintln!(
-                "cargo:warning=Copied {} → libs/{}",
-                lib.display(),
-                name.to_string_lossy()
-            );
+            copied += 1;
         }
     }
+    eprintln!(
+        "cargo:warning=Copied {copied}/{} FFmpeg libs to {}",
+        libs.len(),
+        libs_dir.display()
+    );
 
     // On Linux, also create the unversioned symlinks that the dynamic linker
     // may need (e.g. libavcodec.so → libavcodec.so.61).
     if target_os == "linux" {
         for lib in &libs {
             let name = lib.file_name().unwrap().to_string_lossy();
-            // From "libavcodec.so.61" create symlink "libavcodec.so"
             if let Some(base) = name.split(".so.").next() {
                 let link_name = format!("{base}.so");
                 let link_path = libs_dir.join(&link_name);
@@ -166,9 +148,15 @@ fn bundle_ffmpeg_libs(out_path: &Path, target_os: &str) {
 }
 
 /// Collect FFmpeg shared libraries from the given search directories.
-/// On Windows matches `.dll` files; on Linux matches `.so` / `.so.*` files.
+///
+/// On **Windows**: collects ALL `.dll` files from the first directory that
+/// contains any.  This ensures FFmpeg's own dependency DLLs (zlib, etc.) are
+/// also included, making the distribution fully self-contained.
+///
+/// On **Linux**: collects versioned `.so.{N}` files matching known FFmpeg
+/// library prefixes.
 fn find_ffmpeg_libs(search_dirs: &[PathBuf], target_os: &str) -> Vec<PathBuf> {
-    const NEEDED: &[&str] = &[
+    const NEEDED_LINUX: &[&str] = &[
         "avcodec",
         "avformat",
         "avutil",
@@ -186,17 +174,15 @@ fn find_ffmpeg_libs(search_dirs: &[PathBuf], target_os: &str) -> Vec<PathBuf> {
         let found: Vec<PathBuf> = entries
             .filter_map(|e| e.ok())
             .filter(|e| {
-                // Skip symlinks — we only want the real versioned files
-                // (we'll create our own symlinks later on Linux).
                 let n = e.file_name();
                 let n = n.to_string_lossy().to_lowercase();
                 if target_os == "windows" {
-                    // e.g. avcodec-61.dll, postproc-59.dll
-                    n.ends_with(".dll") && NEEDED.iter().any(|p| n.starts_with(p))
+                    // Grab ALL .dll files — FFmpeg DLLs plus any dependency DLLs
+                    // that FFmpeg itself needs (e.g. zlib1.dll).  Exclude .exe files.
+                    n.ends_with(".dll")
                 } else {
-                    // e.g. libavcodec.so.61, libpostproc.so.59
-                    // Match: lib{name}.so.{version} (the real file, not bare .so symlink)
-                    NEEDED.iter().any(|p| {
+                    // Linux: match lib{name}.so.{version} (real files, not bare .so symlinks)
+                    NEEDED_LINUX.iter().any(|p| {
                         let prefix = format!("lib{p}.so.");
                         n.starts_with(&prefix)
                             && n[prefix.len()..]
