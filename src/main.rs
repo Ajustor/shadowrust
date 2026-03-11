@@ -54,13 +54,14 @@ mod dll_bundle {
                 h_file: *mut std::ffi::c_void,
                 dw_flags: u32,
             ) -> *mut std::ffi::c_void;
+            fn GetLastError() -> u32;
         }
 
         // LOAD_WITH_ALTERED_SEARCH_PATH: when loading a DLL from an absolute
-        // path, Windows searches that DLL's directory first for its own
-        // dependencies. This means avcodec-61.dll will find avutil-59.dll in
-        // libs\ without any additional SetDllDirectoryW needed.
-        const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x00000008;
+        // path, Windows searches the *DLL's own directory* first for its
+        // transitive dependencies (avcodec → avutil, etc.), so all FFmpeg
+        // DLLs in libs\ resolve each other without any extra search path.
+        const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
 
         // ── Startup log (visible even in windowless GUI mode) ─────────────────
         let log_path: PathBuf = std::env::current_exe()
@@ -91,8 +92,12 @@ mod dll_bundle {
             s.encode_wide().chain(std::iter::once(0u16)).collect()
         }
 
-        /// Set `dir` as an additional DLL search directory and pre-load every
-        /// `.dll` found inside.  Returns the number of DLLs successfully loaded.
+        /// Pre-load every `.dll` found in `dir` via `LoadLibraryExW` with
+        /// `LOAD_WITH_ALTERED_SEARCH_PATH` so the delay-load stubs that fire
+        /// later find the modules already in the process module table.
+        ///
+        /// NOTE: `SetDllDirectoryW` is NOT called here — the caller sets it
+        /// exactly once so it is never accidentally overridden.
         fn preload_dlls_from(dir: &PathBuf, log: &mut Option<std::fs::File>) -> usize {
             use std::io::Write as _;
 
@@ -104,16 +109,6 @@ mod dll_bundle {
                         let _ = writeln!(f, "{msg}");
                     }
                 };
-            }
-
-            // SetDllDirectoryW adds this folder to the standard search order so
-            // transitive dependencies (avcodec → avutil, etc.) can be resolved.
-            let wide_dir = to_wide(dir.as_os_str());
-            let ok = unsafe { SetDllDirectoryW(wide_dir.as_ptr()) };
-            if ok == 0 {
-                plog!("[shadowrust] WARNING: SetDllDirectoryW({dir:?}) failed");
-            } else {
-                plog!("[shadowrust] SetDllDirectoryW({dir:?}) OK");
             }
 
             let Ok(entries) = std::fs::read_dir(dir) else {
@@ -153,26 +148,22 @@ mod dll_bundle {
             plog!("[shadowrust] Found {} DLL(s) in {dir:?}", dll_paths.len());
 
             let mut loaded = 0usize;
-            let mut failed = Vec::new();
             for path in &dll_paths {
                 let wide = to_wide(path.as_os_str());
-                // LOAD_WITH_ALTERED_SEARCH_PATH: Windows searches the DLL's own
-                // directory (libs\) for its transitive dependencies automatically.
                 let handle = unsafe {
-                    LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH)
+                    LoadLibraryExW(
+                        wide.as_ptr(),
+                        std::ptr::null_mut(),
+                        LOAD_WITH_ALTERED_SEARCH_PATH,
+                    )
                 };
                 if handle.is_null() {
-                    failed.push(path.file_name().unwrap().to_string_lossy().to_string());
+                    let err = unsafe { GetLastError() };
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    plog!("[shadowrust] FAIL  {name}: Win32 error {err} (0x{err:08X})");
                 } else {
                     loaded += 1;
                 }
-            }
-            if !failed.is_empty() {
-                plog!(
-                    "[shadowrust] WARNING: failed to load {} DLL(s): {}",
-                    failed.len(),
-                    failed.join(", ")
-                );
             }
             plog!("[shadowrust] Loaded {loaded}/{} DLL(s) from {dir:?}", dll_paths.len());
             loaded
@@ -187,13 +178,34 @@ mod dll_bundle {
             let libs_dir = exe_dir.join("libs");
             dll_log!("[shadowrust] Checking libs\\ at {libs_dir:?} — exists: {}", libs_dir.is_dir());
             if libs_dir.is_dir() {
+                // SetDllDirectoryW is called ONCE here so that:
+                //   a) LoadLibraryExW below can resolve transitive deps inside libs\
+                //   b) delay-load stubs that fire later in the process also
+                //      search libs\ first (SetDllDirectoryW is process-wide).
+                // We never call it again so this setting is never overridden.
+                let wide_dir = to_wide(libs_dir.as_os_str());
+                let sdd = unsafe { SetDllDirectoryW(wide_dir.as_ptr()) };
+                dll_log!("[shadowrust] SetDllDirectoryW({libs_dir:?}): {sdd}");
+
+                // Also prepend libs\ to the process PATH so that any code path
+                // that calls LoadLibrary with just a filename (including some
+                // delay-load implementations) finds our DLLs.
+                if let Ok(old_path) = std::env::var("PATH") {
+                    let new_path =
+                        format!("{};{}", libs_dir.display(), old_path);
+                    // SAFETY: single-threaded at this point (before EventLoop)
+                    unsafe { std::env::set_var("PATH", &new_path) };
+                    dll_log!("[shadowrust] Prepended libs\\ to PATH");
+                }
+
                 let n = preload_dlls_from(&libs_dir, &mut log);
                 if n > 0 {
-                    dll_log!("[shadowrust] ✓ Loaded {n} DLL(s) from libs\\ {libs_dir:?}");
+                    dll_log!("[shadowrust] ✓ Loaded {n} DLL(s) from libs\\ — done.");
                     return;
                 }
                 dll_log!(
-                    "[shadowrust] WARNING: libs\\ found but no DLLs loaded from {libs_dir:?}"
+                    "[shadowrust] WARNING: libs\\ found but no DLLs loaded — \
+                     check shadowrust-startup.log for Win32 error codes"
                 );
             }
         }

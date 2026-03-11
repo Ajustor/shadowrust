@@ -45,16 +45,53 @@ impl AudioPassthrough {
             output_device.name().unwrap_or_default()
         );
 
-        let in_cfg = input_device
-            .default_input_config()
-            .context("no default input config")?;
+        // ── Choose input config ───────────────────────────────────────────────
+        // Prefer 48 000 Hz stereo (standard for video capture cards / UAC
+        // devices).  Some cards declare a rate via WASAPI that differs from
+        // their real hardware rate, which causes pitch shift.  By explicitly
+        // requesting 48 kHz we force WASAPI to do the conversion (if any)
+        // and we always know the rate we're actually working with.
+        const PREFERRED_RATE: u32 = 48_000;
+
+        let in_cfg = {
+            let found = input_device
+                .supported_input_configs()
+                .ok()
+                .and_then(|mut it| {
+                    it.find(|c| {
+                        c.min_sample_rate().0 <= PREFERRED_RATE
+                            && c.max_sample_rate().0 >= PREFERRED_RATE
+                    })
+                })
+                .map(|c| c.with_sample_rate(cpal::SampleRate(PREFERRED_RATE)));
+
+            match found {
+                Some(c) => {
+                    log::info!(
+                        "Audio input: using preferred {PREFERRED_RATE} Hz \
+                         ({}ch, {:?})",
+                        c.channels(),
+                        c.sample_format()
+                    );
+                    c
+                }
+                None => {
+                    log::warn!(
+                        "Audio input: device does not support {PREFERRED_RATE} Hz — \
+                         falling back to default_input_config"
+                    );
+                    input_device
+                        .default_input_config()
+                        .context("no default input config")?
+                }
+            }
+        };
 
         let in_channels = in_cfg.channels() as usize;
         let in_rate = in_cfg.sample_rate().0;
 
         // Try to open the output device at the SAME rate as the input so the
-        // ring buffer doesn't drift.  Most devices support 48 kHz; fall back
-        // to their default if they don't support in_rate.
+        // ring buffer doesn't drift (pitch/speed distortion).
         let out_cfg = {
             let same_rate = output_device
                 .supported_output_configs()
@@ -75,6 +112,13 @@ impl AudioPassthrough {
 
         let out_channels = out_cfg.channels() as usize;
         let out_rate = out_cfg.sample_rate().0;
+
+        if out_rate != in_rate {
+            log::warn!(
+                "Audio rate mismatch — in: {in_rate} Hz, out: {out_rate} Hz. \
+                 Playback may sound distorted. Recording is unaffected (uses in_rate)."
+            );
+        }
 
         log::info!(
             "Audio config — in: {in_channels}ch @ {in_rate}Hz  |  out: {out_channels}ch @ {out_rate}Hz"
@@ -107,30 +151,46 @@ impl AudioPassthrough {
             .context("build audio input stream")?;
 
         // ── Output stream: playback buffer → speakers ─────────────────────────
+        // If out_rate != in_rate we do a simple nearest-neighbour resample so
+        // the ring buffer drains proportionally and no pitch/speed distortion
+        // occurs during live playback.  Recording bypasses this path entirely
+        // (uses record_tx/rx at in_rate) so the file is unaffected.
         let out_stream_cfg = out_cfg.config();
         let output_stream = output_device
             .build_output_stream(
                 &out_stream_cfg,
                 move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     let vol = f32::from_bits(volume_reader.load(Ordering::Relaxed));
-                    if in_channels == out_channels {
+
+                    if in_rate == out_rate && in_channels == out_channels {
+                        // Fast path: rates and channels match — direct copy.
                         let filled = pb_cons.pop_slice(out);
                         for s in &mut out[..filled] {
                             *s *= vol;
                         }
                         out[filled..].fill(0.0);
                     } else {
-                        for out_frame in out.chunks_mut(out_channels) {
-                            let mut in_buf = [0.0f32; 8];
-                            let n = pb_cons.pop_slice(&mut in_buf[..in_channels.min(8)]);
-                            for (i, s) in out_frame.iter_mut().enumerate() {
-                                *s = if i < n {
-                                    in_buf[i] * vol
-                                } else if n > 0 {
-                                    in_buf[n - 1] * vol
-                                } else {
-                                    0.0
-                                };
+                        // Rates or channel counts differ.  Pull the right number
+                        // of input frames and resample with nearest-neighbour.
+                        let out_frames = out.len() / out_channels.max(1);
+                        let ratio = in_rate as f64 / out_rate as f64;
+                        let in_frames_need =
+                            ((out_frames as f64 * ratio).ceil() as usize).max(1);
+                        let mut in_buf = vec![0.0f32; in_frames_need * in_channels];
+                        let popped = pb_cons.pop_slice(&mut in_buf);
+                        let avail = popped / in_channels.max(1);
+
+                        for out_i in 0..out_frames {
+                            let in_i = ((out_i as f64 * ratio) as usize).min(avail.saturating_sub(1));
+                            let out_frame =
+                                &mut out[out_i * out_channels..(out_i + 1) * out_channels];
+                            for (ch, s) in out_frame.iter_mut().enumerate() {
+                                let src_ch = ch.min(in_channels.saturating_sub(1));
+                                *s = in_buf
+                                    .get(in_i * in_channels + src_ch)
+                                    .copied()
+                                    .unwrap_or(0.0)
+                                    * vol;
                             }
                         }
                     }
