@@ -26,6 +26,8 @@ pub struct Recorder {
     pub(crate) audio_in_channels: usize,
     pub(crate) audio_frame_size: usize,
     pub(crate) audio_buf: Vec<f32>,
+    /// Format of the audio encoder frame (Planar for AAC, Packed for Opus).
+    pub(crate) audio_enc_format: ffmpeg_next::util::format::Sample,
     /// Software resampler: converts raw CPAL input to the encoder's format.
     /// None if no resampling is needed (rates and channels already match).
     pub(crate) swr: Option<resampling::Context>,

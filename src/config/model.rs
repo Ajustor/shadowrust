@@ -1,5 +1,53 @@
 use serde::{Deserialize, Serialize};
 
+/// Preferred video codec / encoder for recording.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub enum VideoCodecPref {
+    /// H.264 — try NVENC hardware first, then libx264 software (default).
+    #[default]
+    H264Auto,
+    /// H.264 — always use libx264 software encoder.
+    H264Sw,
+    /// H.265/HEVC — try NVENC hardware first, then libx265 software.
+    H265Auto,
+    /// H.265/HEVC — always use libx265 software encoder.
+    H265Sw,
+}
+
+impl VideoCodecPref {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::H264Auto => "H.264 (auto HW)",
+            Self::H264Sw => "H.264 (logiciel)",
+            Self::H265Auto => "H.265 (auto HW)",
+            Self::H265Sw => "H.265 (logiciel)",
+        }
+    }
+
+    pub fn is_hevc(&self) -> bool {
+        matches!(self, Self::H265Auto | Self::H265Sw)
+    }
+}
+
+/// Preferred audio codec for recording.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub enum AudioCodecPref {
+    /// AAC — widely compatible, default.
+    #[default]
+    Aac,
+    /// Opus — better quality at lower bitrates, MKV-native.
+    Opus,
+}
+
+impl AudioCodecPref {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Aac => "AAC",
+            Self::Opus => "Opus",
+        }
+    }
+}
+
 /// Persistent user settings, saved to the OS config directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -17,6 +65,12 @@ pub struct AppConfig {
     pub volume: f32,
     /// Default path for recorded videos
     pub record_path: String,
+    /// Preferred video codec / encoder
+    #[serde(default)]
+    pub video_codec: VideoCodecPref,
+    /// Preferred audio codec
+    #[serde(default)]
+    pub audio_codec: AudioCodecPref,
 }
 
 impl Default for AppConfig {
@@ -29,6 +83,8 @@ impl Default for AppConfig {
             fps: 60,
             volume: 1.0,
             record_path: "capture.mkv".to_string(),
+            video_codec: VideoCodecPref::default(),
+            audio_codec: AudioCodecPref::default(),
         }
     }
 }
@@ -59,6 +115,8 @@ mod tests {
             fps: 30,
             volume: 0.75,
             record_path: "/tmp/video.mp4".to_string(),
+            video_codec: VideoCodecPref::default(),
+            audio_codec: AudioCodecPref::default(),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let restored: AppConfig = serde_json::from_str(&json).unwrap();

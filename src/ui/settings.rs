@@ -1,5 +1,5 @@
 use crate::app::UiAction;
-
+use crate::config::{AudioCodecPref, VideoCodecPref};
 use super::state::UiState;
 
 /// Draw the main settings panel window.
@@ -278,6 +278,57 @@ fn draw_capture_controls(ui: &mut egui::Ui, state: &mut UiState) {
             ui.label("Output file:");
             ui.text_edit_singleline(&mut state.record_path);
         });
+
+        // ── Codec selection ───────────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.label("Vidéo codec:");
+            let video_label = state.video_codec.label();
+            egui::ComboBox::from_id_salt("video-codec")
+                .selected_text(video_label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut state.video_codec,
+                        VideoCodecPref::H264Auto,
+                        VideoCodecPref::H264Auto.label(),
+                    );
+                    ui.selectable_value(
+                        &mut state.video_codec,
+                        VideoCodecPref::H264Sw,
+                        VideoCodecPref::H264Sw.label(),
+                    );
+                    ui.selectable_value(
+                        &mut state.video_codec,
+                        VideoCodecPref::H265Auto,
+                        VideoCodecPref::H265Auto.label(),
+                    );
+                    ui.selectable_value(
+                        &mut state.video_codec,
+                        VideoCodecPref::H265Sw,
+                        VideoCodecPref::H265Sw.label(),
+                    );
+                });
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Audio codec:");
+            egui::ComboBox::from_id_salt("audio-codec")
+                .selected_text(state.audio_codec.label())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut state.audio_codec,
+                        AudioCodecPref::Aac,
+                        AudioCodecPref::Aac.label(),
+                    );
+                    ui.selectable_value(
+                        &mut state.audio_codec,
+                        AudioCodecPref::Opus,
+                        AudioCodecPref::Opus.label(),
+                    );
+                });
+        });
+        if matches!(state.audio_codec, AudioCodecPref::Opus) {
+            ui.small("ℹ Opus recommandé avec .mkv");
+        }
 
         if !state.recording {
             if ui.button("⏺ Start Recording").clicked() {

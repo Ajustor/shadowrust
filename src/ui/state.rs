@@ -1,6 +1,7 @@
 use crate::app::UiAction;
 use crate::audio::AudioPassthrough;
 use crate::capture::{DeviceResolution, list_devices};
+use crate::config::{AudioCodecPref, VideoCodecPref};
 
 #[derive(Default)]
 pub struct UiState {
@@ -17,6 +18,8 @@ pub struct UiState {
     pub fps_display: f32,
     pub volume: f32,
     pub record_path: String,
+    pub video_codec: VideoCodecPref,
+    pub audio_codec: AudioCodecPref,
     pub latency_ms: f32,
     pub frames_dropped: u64,
     pub pending_actions: Vec<UiAction>,

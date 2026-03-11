@@ -16,23 +16,36 @@ impl Recorder {
                 while self.audio_buf.len() < chunk {
                     self.audio_buf.push(0.0);
                 }
-                let mut af = frame::Audio::new(
+
+                let is_planar = matches!(
+                    self.audio_enc_format,
                     ffmpeg_next::util::format::Sample::F32(
-                        ffmpeg_next::util::format::sample::Type::Planar,
-                    ),
+                        ffmpeg_next::util::format::sample::Type::Planar
+                    ) | ffmpeg_next::util::format::Sample::I16(
+                        ffmpeg_next::util::format::sample::Type::Planar
+                    )
+                );
+
+                let mut af = frame::Audio::new(
+                    self.audio_enc_format,
                     self.audio_frame_size,
                     ChannelLayout::STEREO,
                 );
                 af.set_pts(Some(self.audio_pts));
                 let src = &self.audio_buf[..chunk];
-                for ch in 0..2usize {
-                    let dst: &mut [f32] = bytemuck::cast_slice_mut(af.data_mut(ch));
-                    for (i, s) in dst[..self.audio_frame_size].iter_mut().enumerate() {
-                        *s = src[i * 2 + ch];
+                if is_planar {
+                    for ch in 0..2usize {
+                        let dst: &mut [f32] = bytemuck::cast_slice_mut(af.data_mut(ch));
+                        for (i, s) in dst[..self.audio_frame_size].iter_mut().enumerate() {
+                            *s = src[i * 2 + ch];
+                        }
                     }
+                } else {
+                    let dst: &mut [f32] = bytemuck::cast_slice_mut(af.data_mut(0));
+                    let n = chunk.min(dst.len());
+                    dst[..n].copy_from_slice(&src[..n]);
                 }
                 self.write_audio_packet(&mut enc, &mut af);
-                // enc dropped here (finishing)
             }
         }
 

@@ -5,6 +5,7 @@ use std::{
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded};
 
+use crate::config::{AudioCodecPref, VideoCodecPref};
 use super::Recorder;
 
 /// Messages sent from the main thread to the encode thread.
@@ -39,14 +40,17 @@ impl RecordThread {
         fps: u32,
         audio_rate: u32,
         audio_channels: u16,
+        video_codec: VideoCodecPref,
+        audio_codec: AudioCodecPref,
     ) -> anyhow::Result<Self> {
-        // Enough headroom to absorb a few slow I-frames without blocking.
-        // Arc<Vec<u8>> frames are cheap to queue (pointer, not 33 MB copy).
         let (tx, rx) = bounded::<RecordMsg>(128);
 
         let handle = thread::Builder::new()
             .name("shadowrust-encode".into())
-            .spawn(move || encode_loop(rx, path, width, height, fps, audio_rate, audio_channels))
+            .spawn(move || {
+                encode_loop(rx, path, width, height, fps, audio_rate, audio_channels,
+                    video_codec, audio_codec)
+            })
             .map_err(|e| anyhow::anyhow!("spawn encode thread: {e}"))?;
 
         Ok(Self {
@@ -98,8 +102,12 @@ fn encode_loop(
     fps: u32,
     audio_rate: u32,
     audio_channels: u16,
+    video_codec: VideoCodecPref,
+    audio_codec: AudioCodecPref,
 ) {
-    let mut rec = match Recorder::new(&path, width, height, fps, audio_rate, audio_channels) {
+    let mut rec = match Recorder::new(
+        &path, width, height, fps, audio_rate, audio_channels, &video_codec, &audio_codec,
+    ) {
         Ok(r) => r,
         Err(e) => {
             log::error!("Recorder init failed: {e}");

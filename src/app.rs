@@ -59,6 +59,8 @@ impl App {
         ui_state.fps = cfg.fps;
         ui_state.volume = cfg.volume;
         ui_state.record_path = cfg.record_path.clone();
+        ui_state.video_codec = cfg.video_codec.clone();
+        ui_state.audio_codec = cfg.audio_codec.clone();
         ui_state.menu_visible = true;
         // preferred_video_device / preferred_audio_device are picked up later
         // in auto-start capture once the device list is populated.
@@ -455,6 +457,8 @@ fn handle_action(
                         fps,
                         volume: ui_state.volume,
                         record_path: ui_state.record_path.clone(),
+                        video_codec: ui_state.video_codec.clone(),
+                        audio_codec: ui_state.audio_codec.clone(),
                     };
                     AppConfig::save_if_changed(saved_config, &new_cfg).ok();
                     *saved_config = new_cfg;
@@ -523,6 +527,8 @@ fn handle_action(
                         fps,
                         volume: ui_state.volume,
                         record_path: ui_state.record_path.clone(),
+                        video_codec: ui_state.video_codec.clone(),
+                        audio_codec: ui_state.audio_codec.clone(),
                     };
                     AppConfig::save_if_changed(saved_config, &new_cfg).ok();
                     *saved_config = new_cfg;
@@ -557,11 +563,17 @@ fn handle_action(
             }
             .max(1);
 
-            match RecordThread::start(path.clone(), w, h, actual_fps, rate, ch) {
+            match RecordThread::start(
+                path.clone(), w, h, actual_fps, rate, ch,
+                ui_state.video_codec.clone(),
+                ui_state.audio_codec.clone(),
+            ) {
                 Ok(rec) => {
                     state.recorder = Some(rec);
-                    // Save the record path preference
+                    // Save codec prefs along with the record path
                     saved_config.record_path = path.clone();
+                    saved_config.video_codec = ui_state.video_codec.clone();
+                    saved_config.audio_codec = ui_state.audio_codec.clone();
                     saved_config.save();
                     log::info!(
                         "Recording → {path} ({w}x{h}@{actual_fps}fps, audio {ch}ch @ {rate}Hz)"

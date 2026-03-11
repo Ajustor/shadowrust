@@ -8,10 +8,10 @@ use ffmpeg_next::{
     util::rational::Rational,
 };
 
+use crate::config::{AudioCodecPref, VideoCodecPref};
 use super::Recorder;
 
-/// The sample rate the AAC encoder always runs at.
-/// Normalising to a single rate via SWR eliminates any CPAL/driver rate drift.
+/// The sample rate the audio encoder always runs at.
 const TARGET_RATE: u32 = 48_000;
 
 impl Recorder {
@@ -22,39 +22,18 @@ impl Recorder {
         fps: u32,
         audio_in_rate: u32,
         audio_channels: u16,
+        video_codec_pref: &VideoCodecPref,
+        audio_codec_pref: &AudioCodecPref,
     ) -> Result<Self> {
         ffmpeg::init().context("ffmpeg init")?;
 
         let mut octx = format::output(path).context("open output file")?;
 
         // ── Video stream ──────────────────────────────────────────────────────
-        let video_codec = encoder::find(codec::Id::H264).context("find H.264 encoder")?;
         let video_time_base = Rational::new(1, fps as i32);
-
-        let mut venc_ctx = codec::Context::new_with_codec(video_codec)
-            .encoder()
-            .video()
-            .context("create video encoder ctx")?;
-        venc_ctx.set_width(width);
-        venc_ctx.set_height(height);
-        venc_ctx.set_format(ffmpeg_next::util::format::Pixel::YUV420P);
-        venc_ctx.set_time_base(video_time_base);
-        venc_ctx.set_frame_rate(Some(Rational::new(fps as i32, 1)));
-        // Do NOT set bit_rate — we use CRF mode (quality-based) which produces
-        // much smaller files than CBR at 8 Mbps.  Setting bit_rate would
-        // override CRF and force a constant-bitrate mode.
-
-        let mut vopts = Dictionary::new();
-        vopts.set("preset", "fast");   // good compression, still real-time
-        vopts.set("crf", "23");         // visually lossless (FFmpeg default quality)
-
-        let video_enc = venc_ctx.open_with(vopts).context("open H.264 encoder")?;
-
-        {
-            let mut vst = octx.add_stream(video_codec).context("add video stream")?;
-            vst.set_parameters(&video_enc);
-        }
-        let video_stream_idx = 0usize;
+        let (video_enc, video_stream_idx, encoder_name) =
+            open_video_encoder(video_codec_pref, &mut octx, width, height, fps, video_time_base)?;
+        log::info!("Video encoder: {encoder_name} ({width}×{height} @ {fps}fps)");
 
         let video_scaler = scaling::Context::get(
             ffmpeg_next::util::format::Pixel::RGBA,
@@ -67,65 +46,27 @@ impl Recorder {
         )
         .context("create scaler")?;
 
-        // ── Audio stream (AAC @ TARGET_RATE Hz stereo) ────────────────────────
-        // The encoder always runs at TARGET_RATE Hz stereo.  If the CPAL input
-        // is at a different rate or channel count, the SWR resampler below
-        // converts it transparently — this is the root fix for "audio too fast".
-        let (audio_enc, audio_stream_idx, audio_frame_size) = match encoder::find(codec::Id::AAC) {
-            Some(audio_codec) => {
-                let mut aenc_ctx = codec::Context::new_with_codec(audio_codec)
-                    .encoder()
-                    .audio()
-                    .context("create audio encoder ctx")?;
+        // ── Audio stream ──────────────────────────────────────────────────────
+        let (audio_enc, audio_stream_idx, audio_frame_size, audio_enc_format) =
+            open_audio_encoder(audio_codec_pref, &mut octx)?;
 
-                aenc_ctx.set_rate(TARGET_RATE as i32);
-                aenc_ctx.set_channel_layout(ChannelLayout::STEREO);
-                aenc_ctx.set_format(ffmpeg_next::util::format::Sample::F32(
-                    ffmpeg_next::util::format::sample::Type::Planar,
-                ));
-                aenc_ctx.set_bit_rate(192_000);
-                aenc_ctx.set_time_base(Rational::new(1, TARGET_RATE as i32));
-
-                let audio_enc = aenc_ctx.open().context("open AAC encoder")?;
-                let frame_size = (audio_enc.frame_size() as usize).max(1024);
-
-                {
-                    let mut ast = octx.add_stream(audio_codec).context("add audio stream")?;
-                    ast.set_parameters(&audio_enc);
-                }
-                let audio_stream_idx = 1usize;
-
-                log::info!(
-                    "Audio recording: AAC stereo @ {TARGET_RATE} Hz, frame_size={frame_size} \
-                     (input: {}ch @ {audio_in_rate} Hz)",
-                    audio_channels
-                );
-                (Some(audio_enc), audio_stream_idx, frame_size)
-            }
-            None => {
-                log::warn!("AAC encoder not found — recording without audio");
-                (None, usize::MAX, 1024)
-            }
-        };
-
-        // ── SWR resampler: CPAL input → encoder format ────────────────────────
-        // Even if the rates happen to match, we always normalise to stereo
-        // f32-planar so the encoder never sees unexpected formats.
+        // ── SWR resampler ─────────────────────────────────────────────────────
         let in_layout = if audio_channels >= 2 {
             ChannelLayout::STEREO
         } else {
             ChannelLayout::MONO
         };
+        // SWR always outputs packed (interleaved) stereo — audio_buf stores L,R,L,R,...
+        // drain_buf_to_encoder then deinterleaves for planar encoders (AAC) or
+        // copies directly for packed encoders (Opus).
         let swr = resampling::Context::get(
-            // source: interleaved f32 at CPAL's rate
             ffmpeg_next::util::format::Sample::F32(
                 ffmpeg_next::util::format::sample::Type::Packed,
             ),
             in_layout,
             audio_in_rate,
-            // destination: planar f32 stereo at TARGET_RATE
             ffmpeg_next::util::format::Sample::F32(
-                ffmpeg_next::util::format::sample::Type::Planar,
+                ffmpeg_next::util::format::sample::Type::Packed,
             ),
             ChannelLayout::STEREO,
             TARGET_RATE,
@@ -133,9 +74,6 @@ impl Recorder {
         .map_err(|e| log::warn!("SWR init failed ({e}) — recording without resampling"))
         .ok();
 
-        // Write the file header.  The encode thread calls rec.finish() which
-        // always writes the trailer, so standard (non-fragmented) MP4 works
-        // correctly.  MKV is natively progressive; no special flags needed.
         octx.write_header().context("write file header")?;
 
         Ok(Self {
@@ -154,8 +92,146 @@ impl Recorder {
             audio_in_channels: audio_channels as usize,
             audio_frame_size,
             audio_buf: Vec::new(),
+            audio_enc_format,
             swr,
             audio_in_rate,
         })
     }
+}
+
+// ── Video encoder selection ────────────────────────────────────────────────────
+
+/// Try video encoders in preference order.  Returns `(encoder, stream_idx, name)`.
+fn open_video_encoder(
+    pref: &VideoCodecPref,
+    octx: &mut format::context::Output,
+    width: u32,
+    height: u32,
+    fps: u32,
+    time_base: Rational,
+) -> Result<(encoder::Video, usize, String)> {
+    // (encoder_name, quality_options)
+    let candidates: &[(&str, &[(&str, &str)])] = match pref {
+        VideoCodecPref::H264Auto => &[
+            ("h264_nvenc", &[("preset", "p4"), ("rc", "vbr"), ("cq", "23"), ("b:v", "0")]),
+            ("libx264",    &[("preset", "fast"), ("crf", "23")]),
+        ],
+        VideoCodecPref::H264Sw => &[
+            ("libx264", &[("preset", "fast"), ("crf", "23")]),
+        ],
+        VideoCodecPref::H265Auto => &[
+            ("hevc_nvenc", &[("preset", "p4"), ("rc", "vbr"), ("cq", "28"), ("b:v", "0")]),
+            ("libx265",    &[("preset", "fast"), ("crf", "28")]),
+        ],
+        VideoCodecPref::H265Sw => &[
+            ("libx265", &[("preset", "fast"), ("crf", "28")]),
+        ],
+    };
+
+    for (name, opts_pairs) in candidates {
+        let codec = match encoder::find_by_name(name) {
+            Some(c) => c,
+            None => {
+                log::debug!("Video encoder {name} not found");
+                continue;
+            }
+        };
+
+        let mut ctx = match codec::Context::new_with_codec(codec).encoder().video() {
+            Ok(c) => c,
+            Err(e) => {
+                log::debug!("{name} context error: {e}");
+                continue;
+            }
+        };
+
+        ctx.set_width(width);
+        ctx.set_height(height);
+        ctx.set_format(ffmpeg_next::util::format::Pixel::YUV420P);
+        ctx.set_time_base(time_base);
+        ctx.set_frame_rate(Some(Rational::new(fps as i32, 1)));
+
+        let mut opts = Dictionary::new();
+        for (k, v) in *opts_pairs {
+            opts.set(k, v);
+        }
+
+        match ctx.open_with(opts) {
+            Ok(enc) => {
+                let idx = {
+                    let mut vst = octx.add_stream(codec).context("add video stream")?;
+                    vst.set_parameters(&enc);
+                    vst.index()
+                };
+                return Ok((enc, idx, name.to_string()));
+            }
+            Err(e) => log::info!("{name} failed to open ({e}), trying next encoder"),
+        }
+    }
+
+    anyhow::bail!("No video encoder available for {pref:?}")
+}
+
+// ── Audio encoder selection ────────────────────────────────────────────────────
+
+/// Open audio encoder.  Returns `(encoder, stream_idx, frame_size, enc_format)`.
+fn open_audio_encoder(
+    pref: &AudioCodecPref,
+    octx: &mut format::context::Output,
+) -> Result<(Option<encoder::Audio>, usize, usize, ffmpeg_next::util::format::Sample)> {
+    // (codec_id_or_name, bitrate, frame_format)
+    let (codec, bitrate, frame_fmt) = match pref {
+        AudioCodecPref::Aac => (
+            encoder::find(codec::Id::AAC),
+            192_000usize,
+            ffmpeg_next::util::format::Sample::F32(
+                ffmpeg_next::util::format::sample::Type::Planar,
+            ),
+        ),
+        AudioCodecPref::Opus => (
+            encoder::find_by_name("libopus")
+                .or_else(|| encoder::find(codec::Id::OPUS)),
+            128_000usize,
+            ffmpeg_next::util::format::Sample::F32(
+                ffmpeg_next::util::format::sample::Type::Packed,
+            ),
+        ),
+    };
+
+    let codec = match codec {
+        Some(c) => c,
+        None => {
+            log::warn!("{pref:?} encoder not found — recording without audio");
+            let default_fmt = ffmpeg_next::util::format::Sample::F32(
+                ffmpeg_next::util::format::sample::Type::Planar,
+            );
+            return Ok((None, usize::MAX, 1024, default_fmt));
+        }
+    };
+
+    let mut aenc_ctx = codec::Context::new_with_codec(codec)
+        .encoder()
+        .audio()
+        .context("create audio encoder ctx")?;
+
+    aenc_ctx.set_rate(TARGET_RATE as i32);
+    aenc_ctx.set_channel_layout(ChannelLayout::STEREO);
+    aenc_ctx.set_format(frame_fmt);
+    aenc_ctx.set_bit_rate(bitrate);
+    aenc_ctx.set_time_base(Rational::new(1, TARGET_RATE as i32));
+
+    let audio_enc = aenc_ctx.open().context("open audio encoder")?;
+    let default_frame_size = if matches!(pref, AudioCodecPref::Opus) { 960 } else { 1024 };
+    let frame_size = (audio_enc.frame_size() as usize).max(default_frame_size);
+
+    let idx = {
+        let mut ast = octx.add_stream(codec).context("add audio stream")?;
+        ast.set_parameters(&audio_enc);
+        ast.index()
+    };
+
+    log::info!(
+        "Audio encoder: {pref:?} stereo @ {TARGET_RATE} Hz, frame_size={frame_size}, bitrate={bitrate}"
+    );
+    Ok((Some(audio_enc), idx, frame_size, frame_fmt))
 }

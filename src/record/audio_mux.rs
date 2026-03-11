@@ -88,34 +88,48 @@ impl Recorder {
         }
     }
 
-    /// Drain `audio_buf` into the AAC encoder in chunks of `audio_frame_size`
-    /// stereo pairs.  Leftover samples (< one full AAC frame) stay in the buffer.
+    /// Drain `audio_buf` into the encoder in chunks of `audio_frame_size` stereo pairs.
+    /// Handles both planar formats (AAC) and packed formats (Opus).
+    /// Leftover samples (< one full frame) stay in the buffer.
     fn drain_buf_to_encoder(&mut self, enc: &mut ffmpeg_next::encoder::Audio) {
         // Each AAC frame = audio_frame_size samples per channel.
         // Interleaved stereo ⇒ audio_frame_size × 2 f32 values per chunk.
         let chunk = self.audio_frame_size * 2;
 
+        let is_planar = matches!(
+            self.audio_enc_format,
+            ffmpeg_next::util::format::Sample::F32(ffmpeg_next::util::format::sample::Type::Planar)
+                | ffmpeg_next::util::format::Sample::I16(
+                    ffmpeg_next::util::format::sample::Type::Planar
+                )
+        );
+
         while self.audio_buf.len() >= chunk {
             let mut af = frame::Audio::new(
-                ffmpeg_next::util::format::Sample::F32(
-                    ffmpeg_next::util::format::sample::Type::Planar,
-                ),
+                self.audio_enc_format,
                 self.audio_frame_size,
                 ChannelLayout::STEREO,
             );
             af.set_pts(Some(self.audio_pts));
             self.audio_pts += self.audio_frame_size as i64;
 
-            // Deinterleave: buf[L0,R0,L1,R1,…] → plane 0 = L, plane 1 = R
             let src = &self.audio_buf[..chunk];
-            for ch in 0..2usize {
-                let dst: &mut [f32] = bytemuck::cast_slice_mut(af.data_mut(ch));
-                for (i, s) in dst[..self.audio_frame_size].iter_mut().enumerate() {
-                    *s = src[i * 2 + ch];
+            if is_planar {
+                // Deinterleave: buf[L0,R0,L1,R1,…] → plane 0 = L, plane 1 = R
+                for ch in 0..2usize {
+                    let dst: &mut [f32] = bytemuck::cast_slice_mut(af.data_mut(ch));
+                    for (i, s) in dst[..self.audio_frame_size].iter_mut().enumerate() {
+                        *s = src[i * 2 + ch];
+                    }
                 }
+            } else {
+                // Packed: audio_buf is already interleaved stereo — copy directly.
+                let dst: &mut [f32] = bytemuck::cast_slice_mut(af.data_mut(0));
+                let n = chunk.min(dst.len());
+                dst[..n].copy_from_slice(&src[..n]);
             }
-            self.audio_buf.drain(..chunk);
 
+            self.audio_buf.drain(..chunk);
             self.write_audio_packet(enc, &mut af);
         }
     }
