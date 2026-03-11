@@ -48,7 +48,8 @@ impl Recorder {
         dst.set_pts(Some(self.video_pts));
         self.video_pts += 1;
 
-        if self.video_enc.send_frame(&dst).is_err() {
+        if let Err(e) = self.video_enc.send_frame(&dst) {
+            log::warn!("Video encoder send_frame failed at PTS={}: {e}", self.video_pts - 1);
             return;
         }
 

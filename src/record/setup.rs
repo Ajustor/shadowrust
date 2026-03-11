@@ -110,66 +110,117 @@ fn open_video_encoder(
     fps: u32,
     time_base: Rational,
 ) -> Result<(encoder::Video, usize, String)> {
-    // (encoder_name, quality_options)
-    let candidates: &[(&str, &[(&str, &str)])] = match pref {
-        VideoCodecPref::H264Auto => &[
-            ("h264_nvenc", &[("preset", "p4"), ("rc", "vbr"), ("cq", "23"), ("b:v", "0")]),
-            ("libx264",    &[("preset", "fast"), ("crf", "23")]),
-        ],
-        VideoCodecPref::H264Sw => &[
-            ("libx264", &[("preset", "fast"), ("crf", "23")]),
-        ],
-        VideoCodecPref::H265Auto => &[
-            ("hevc_nvenc", &[("preset", "p4"), ("rc", "vbr"), ("cq", "28"), ("b:v", "0")]),
-            ("libx265",    &[("preset", "fast"), ("crf", "28")]),
-        ],
-        VideoCodecPref::H265Sw => &[
-            ("libx265", &[("preset", "fast"), ("crf", "28")]),
-        ],
+    // Software fallback options (same as before the codec-pref feature).
+    // Used as the last-resort entry so the fallback is byte-for-byte identical
+    // to the pre-feature code path.
+    let sw_h264_opts: &[(&str, &str)] = &[("preset", "fast"), ("crf", "23")];
+    let sw_h265_opts: &[(&str, &str)] = &[("preset", "fast"), ("crf", "28")];
+    // NVENC options: constqp mode via `cq` (simplest, works on all NVENC gens).
+    let nvenc_h264_opts: &[(&str, &str)] = &[("preset", "p4"), ("cq", "23")];
+    let nvenc_h265_opts: &[(&str, &str)] = &[("preset", "p4"), ("cq", "28")];
+
+    // Named-encoder candidates (try in order; first success wins).
+    let hw_candidates: &[(&str, &[(&str, &str)])] = match pref {
+        VideoCodecPref::H264Auto => &[("h264_nvenc", nvenc_h264_opts)],
+        VideoCodecPref::H265Auto => &[("hevc_nvenc", nvenc_h265_opts)],
+        VideoCodecPref::H264Sw | VideoCodecPref::H265Sw => &[],
     };
 
-    for (name, opts_pairs) in candidates {
-        let codec = match encoder::find_by_name(name) {
-            Some(c) => c,
-            None => {
-                log::debug!("Video encoder {name} not found");
-                continue;
-            }
-        };
-
-        let mut ctx = match codec::Context::new_with_codec(codec).encoder().video() {
-            Ok(c) => c,
-            Err(e) => {
-                log::debug!("{name} context error: {e}");
-                continue;
-            }
-        };
-
-        ctx.set_width(width);
-        ctx.set_height(height);
-        ctx.set_format(ffmpeg_next::util::format::Pixel::YUV420P);
-        ctx.set_time_base(time_base);
-        ctx.set_frame_rate(Some(Rational::new(fps as i32, 1)));
-
-        let mut opts = Dictionary::new();
-        for (k, v) in *opts_pairs {
-            opts.set(k, v);
+    // Software codec ID used for the final fallback (same as original code).
+    let sw_fallback: Option<(codec::Id, &[(&str, &str)])> = match pref {
+        VideoCodecPref::H264Auto | VideoCodecPref::H264Sw => {
+            Some((codec::Id::H264, sw_h264_opts))
         }
+        VideoCodecPref::H265Auto | VideoCodecPref::H265Sw => {
+            Some((codec::Id::HEVC, sw_h265_opts))
+        }
+    };
 
-        match ctx.open_with(opts) {
-            Ok(enc) => {
-                let idx = {
-                    let mut vst = octx.add_stream(codec).context("add video stream")?;
-                    vst.set_parameters(&enc);
-                    vst.index()
-                };
-                return Ok((enc, idx, name.to_string()));
-            }
-            Err(e) => log::info!("{name} failed to open ({e}), trying next encoder"),
+    // ── Try hardware encoders ─────────────────────────────────────────────────
+    for (name, opts_pairs) in hw_candidates {
+        if let Some((enc, idx)) = try_open_named(name, opts_pairs, octx, width, height, fps, time_base) {
+            return Ok((enc, idx, name.to_string()));
+        }
+    }
+
+    // ── Software fallback (by codec::Id — identical to pre-feature code) ──────
+    if let Some((id, opts_pairs)) = sw_fallback {
+        let codec = encoder::find(id).with_context(|| format!("no software encoder for {id:?}"))?;
+        let name = unsafe {
+            std::ffi::CStr::from_ptr((*codec.as_ptr()).name)
+                .to_str()
+                .unwrap_or("unknown")
+                .to_owned()
+        };
+        if let Some((enc, idx)) = try_open_codec(codec, opts_pairs, octx, width, height, fps, time_base) {
+            return Ok((enc, idx, name));
         }
     }
 
     anyhow::bail!("No video encoder available for {pref:?}")
+}
+
+/// Try to open a named encoder.  Returns `None` if not found or fails to open.
+fn try_open_named(
+    name: &str,
+    opts: &[(&str, &str)],
+    octx: &mut format::context::Output,
+    width: u32,
+    height: u32,
+    fps: u32,
+    time_base: Rational,
+) -> Option<(encoder::Video, usize)> {
+    let codec = encoder::find_by_name(name)?;
+    try_open_codec(codec, opts, octx, width, height, fps, time_base)
+}
+
+/// Try to open a codec object.  Returns `None` if setup or open fails.
+fn try_open_codec(
+    codec: codec::codec::Codec,
+    opts: &[(&str, &str)],
+    octx: &mut format::context::Output,
+    width: u32,
+    height: u32,
+    fps: u32,
+    time_base: Rational,
+) -> Option<(encoder::Video, usize)> {
+    let mut ctx = codec::Context::new_with_codec(codec).encoder().video().ok()?;
+    ctx.set_width(width);
+    ctx.set_height(height);
+    ctx.set_format(ffmpeg_next::util::format::Pixel::YUV420P);
+    ctx.set_time_base(time_base);
+    ctx.set_frame_rate(Some(Rational::new(fps as i32, 1)));
+
+    let mut dict = Dictionary::new();
+    for (k, v) in opts {
+        dict.set(k, v);
+    }
+
+    match ctx.open_with(dict) {
+        Ok(enc) => {
+            // Add stream only after encoder opens successfully.
+            match octx.add_stream(codec) {
+                Ok(mut vst) => {
+                    vst.set_parameters(&enc);
+                    let idx = vst.index();
+                    Some((enc, idx))
+                }
+                Err(e) => {
+                    log::warn!("add_stream failed: {e}");
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            let name = unsafe {
+                std::ffi::CStr::from_ptr((*codec.as_ptr()).name)
+                    .to_str()
+                    .unwrap_or("?")
+            };
+            log::info!("{name} failed to open ({e}), trying next encoder");
+            None
+        }
+    }
 }
 
 // ── Audio encoder selection ────────────────────────────────────────────────────
