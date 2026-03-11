@@ -13,7 +13,7 @@ use crate::{
     capture::{CaptureConfig, CaptureThread, DeviceResolution},
     config::AppConfig,
     power::SleepInhibitor,
-    record::Recorder,
+    record::RecordThread,
     render::Renderer,
     ui::UiState,
 };
@@ -29,8 +29,8 @@ struct RunningState {
     window: Arc<Window>,
     renderer: Renderer,
     capture: Option<CaptureThread>,
-    frame_rx: Option<Receiver<Vec<u8>>>,
-    recorder: Option<Recorder>,
+    frame_rx: Option<Receiver<Arc<Vec<u8>>>>,
+    recorder: Option<RecordThread>,
     audio: Option<AudioPassthrough>,
     frame_size: (u32, u32),
     resolution_query_rx: Option<Receiver<Vec<DeviceResolution>>>,
@@ -192,10 +192,18 @@ impl ApplicationHandler for App {
                 "Auto-starting capture on device {device_index}: {}",
                 devices[device_index]
             );
-            // NOTE: we do NOT spawn a resolution query here — it would race
-            // with CaptureThread opening the same device, causing the query to
-            // fail and returning an empty resolution list.  The UI settings
-            // panel queries resolutions lazily when the user changes device.
+
+            // Query resolutions BEFORE opening the capture thread so the
+            // device is still free (opening twice on the same device would
+            // fail on Windows / V4L2).
+            let resolutions =
+                crate::capture::query_device_resolutions(device_index);
+            if !resolutions.is_empty() {
+                self.ui_state.set_device_resolutions(resolutions);
+            }
+
+            // Recompute w/h/fps in case set_device_resolutions() updated them.
+            let (w, h, fps) = (self.ui_state.width, self.ui_state.height, self.ui_state.fps);
 
             let config = CaptureConfig {
                 device_index,
@@ -211,12 +219,12 @@ impl ApplicationHandler for App {
                     self.ui_state.capturing = true;
                     self.ui_state.selected_device = device_index;
 
-                    // Audio auto-starts with video, preferring the saved audio device.
-                    let audio_hint = self
-                        .ui_state
-                        .preferred_audio_device
-                        .clone()
-                        .or_else(|| audio_hint_for_device(&devices[device_index]));
+                    // Derive audio hint ONLY from the video device name so we
+                    // always open the capture card's UAC audio, never the
+                    // system microphone (which is what preferred_audio_device
+                    // could contain if the user's mic was first in the list).
+                    let audio_hint = audio_hint_for_device(&devices[device_index]);
+                    log::info!("Audio hint for auto-start: {audio_hint:?}");
                     match AudioPassthrough::start(audio_hint.as_deref(), self.ui_state.volume) {
                         Ok(audio) => {
                             state.audio = Some(audio);
@@ -304,17 +312,15 @@ impl ApplicationHandler for App {
                             state.capture_fps_since = Instant::now();
                         }
 
-                        if let Some(rec) = &mut state.recorder {
+                        if let Some(rec) = &state.recorder {
                             // Drain audio captured since the last frame and mux it
                             if let Some(audio) = &state.audio {
                                 let samples = audio.drain_recording_samples();
-                                if !samples.is_empty() {
-                                    rec.push_audio(&samples);
-                                }
+                                rec.push_audio(samples);
                             }
-                            rec.push_frame(&frame, state.frame_size);
+                            rec.push_frame(frame.clone(), state.frame_size);
                         }
-                        state.renderer.update_frame(&frame, state.frame_size);
+                        state.renderer.update_frame(&**frame, state.frame_size);
                     }
                 }
 
@@ -551,7 +557,7 @@ fn handle_action(
             }
             .max(1);
 
-            match Recorder::new(&path, w, h, actual_fps, rate, ch) {
+            match RecordThread::start(path.clone(), w, h, actual_fps, rate, ch) {
                 Ok(rec) => {
                     state.recorder = Some(rec);
                     // Save the record path preference
@@ -567,11 +573,8 @@ fn handle_action(
 
         UiAction::StopRecording => {
             if let Some(rec) = state.recorder.take() {
-                if let Err(e) = rec.finish() {
-                    log::error!("Failed to finalise recording: {e}");
-                } else {
-                    log::info!("Recording saved");
-                }
+                rec.finish();
+                log::info!("Recording saved");
             }
         }
 
