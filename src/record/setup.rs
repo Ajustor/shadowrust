@@ -3,7 +3,8 @@ use ffmpeg_next as ffmpeg;
 use ffmpeg_next::{
     Dictionary,
     channel_layout::ChannelLayout,
-    codec, encoder, format,
+    codec::{self, flag::Flags as CodecFlags},
+    encoder, format,
     software::{resampling, scaling},
     util::rational::Rational,
 };
@@ -186,6 +187,10 @@ fn try_open_codec(
     ctx.set_format(ffmpeg_next::util::format::Pixel::YUV420P);
     ctx.set_time_base(time_base);
     ctx.set_frame_rate(Some(Rational::new(fps as i32, 1)));
+    // AV_CODEC_FLAG_GLOBAL_HEADER puts SPS/PPS into extradata (AVCC format).
+    // Required so that avcodec_parameters_from_context copies extradata to the
+    // stream, which MKV/MP4 muxers need in the container track header.
+    ctx.set_flags(CodecFlags::GLOBAL_HEADER);
 
     let mut dict = Dictionary::new();
     for (k, v) in opts {
@@ -261,6 +266,10 @@ fn open_audio_encoder(
     aenc_ctx.set_format(frame_fmt);
     aenc_ctx.set_bit_rate(bitrate);
     aenc_ctx.set_time_base(Rational::new(1, TARGET_RATE as i32));
+    // AV_CODEC_FLAG_GLOBAL_HEADER puts AudioSpecificConfig into extradata.
+    // The MKV muxer requires this in CodecPrivate for AAC tracks; without it
+    // write_header fails with AVERROR_INVALIDDATA.
+    aenc_ctx.set_flags(CodecFlags::GLOBAL_HEADER);
 
     let audio_enc = aenc_ctx.open().context("open audio encoder")?;
     let default_frame_size = if matches!(pref, AudioCodecPref::Opus) { 960 } else { 1024 };

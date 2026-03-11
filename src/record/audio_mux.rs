@@ -116,10 +116,19 @@ impl Recorder {
             let src = &self.audio_buf[..chunk];
             if is_planar {
                 // Deinterleave: buf[L0,R0,L1,R1,…] → plane 0 = L, plane 1 = R
+                // IMPORTANT: in FFmpeg planar audio frames only linesize[0] is set;
+                // linesize[1..N] = 0. Use raw data[ch] pointer + audio_frame_size
+                // (nb_samples) as the plane length instead of data_mut(ch).
+                let n = self.audio_frame_size;
                 for ch in 0..2usize {
-                    let dst: &mut [f32] = bytemuck::cast_slice_mut(af.data_mut(ch));
-                    for (i, s) in dst[..self.audio_frame_size].iter_mut().enumerate() {
-                        *s = src[i * 2 + ch];
+                    unsafe {
+                        let plane = std::slice::from_raw_parts_mut(
+                            (*af.as_mut_ptr()).data[ch] as *mut f32,
+                            n,
+                        );
+                        for (i, s) in plane.iter_mut().enumerate() {
+                            *s = src[i * 2 + ch];
+                        }
                     }
                 }
             } else {
@@ -139,7 +148,8 @@ impl Recorder {
         enc: &mut ffmpeg_next::encoder::Audio,
         af: &mut frame::Audio,
     ) {
-        if enc.send_frame(af).is_err() {
+        if let Err(e) = enc.send_frame(af) {
+            log::warn!("Audio encoder send_frame failed: {e}");
             return;
         }
         let audio_tb = match self.octx.stream(self.audio_stream_idx) {
@@ -150,7 +160,9 @@ impl Recorder {
         while enc.receive_packet(&mut pkt).is_ok() {
             pkt.set_stream(self.audio_stream_idx);
             pkt.rescale_ts(Rational::new(1, self.audio_sample_rate as i32), audio_tb);
-            pkt.write_interleaved(&mut self.octx).ok();
+            if let Err(e) = pkt.write_interleaved(&mut self.octx) {
+                log::warn!("Audio write_interleaved failed: {e}");
+            }
         }
     }
 }

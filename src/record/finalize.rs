@@ -34,10 +34,16 @@ impl Recorder {
                 af.set_pts(Some(self.audio_pts));
                 let src = &self.audio_buf[..chunk];
                 if is_planar {
+                    let n = self.audio_frame_size;
                     for ch in 0..2usize {
-                        let dst: &mut [f32] = bytemuck::cast_slice_mut(af.data_mut(ch));
-                        for (i, s) in dst[..self.audio_frame_size].iter_mut().enumerate() {
-                            *s = src[i * 2 + ch];
+                        unsafe {
+                            let plane = std::slice::from_raw_parts_mut(
+                                (*af.as_mut_ptr()).data[ch] as *mut f32,
+                                n,
+                            );
+                            for (i, s) in plane.iter_mut().enumerate() {
+                                *s = src[i * 2 + ch];
+                            }
                         }
                     }
                 } else {
@@ -46,6 +52,8 @@ impl Recorder {
                     dst[..n].copy_from_slice(&src[..n]);
                 }
                 self.write_audio_packet(&mut enc, &mut af);
+                // Put the encoder back so the EOF flush below can drain it.
+                self.audio_enc = Some(enc);
             }
         }
 
