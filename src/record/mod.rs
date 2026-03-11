@@ -4,6 +4,8 @@ mod setup;
 mod thread;
 mod video;
 
+use std::time::Instant;
+
 use ffmpeg_next::{encoder, format, software::resampling, software::scaling, util::rational::Rational};
 
 pub use thread::RecordThread;
@@ -16,6 +18,7 @@ pub struct Recorder {
     pub(crate) video_stream_idx: usize,
     pub(crate) video_pts: i64,
     pub(crate) video_time_base: Rational,
+    pub(crate) video_start: Instant,
     pub(crate) width: u32,
     pub(crate) height: u32,
     // ── Audio ──

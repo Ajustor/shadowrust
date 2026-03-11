@@ -45,8 +45,18 @@ impl Recorder {
             return;
         }
 
-        dst.set_pts(Some(self.video_pts));
-        self.video_pts += 1;
+        // Compute PTS from wall-clock time elapsed since recording started.
+        // This ensures correct playback speed regardless of frame rate fluctuations
+        // or mismatches between configured fps and actual delivered frame rate.
+        let elapsed = self.video_start.elapsed().as_secs_f64();
+        let tb = self.video_time_base;
+        let pts_from_clock = (elapsed * tb.denominator() as f64 / tb.numerator() as f64)
+            .round() as i64;
+        // Ensure PTS is strictly monotonically increasing (required by encoder).
+        let pts = pts_from_clock.max(self.video_pts);
+        self.video_pts = pts + 1;
+
+        dst.set_pts(Some(pts));
 
         if let Err(e) = self.video_enc.send_frame(&dst) {
             log::warn!("Video encoder send_frame failed at PTS={}: {e}", self.video_pts - 1);

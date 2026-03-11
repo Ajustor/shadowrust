@@ -8,6 +8,7 @@ use ffmpeg_next::{
     software::{resampling, scaling},
     util::rational::Rational,
 };
+use std::time::Instant;
 
 use crate::config::{AudioCodecPref, VideoCodecPref};
 use super::Recorder;
@@ -84,6 +85,7 @@ impl Recorder {
             video_stream_idx,
             video_pts: 0,
             video_time_base,
+            video_start: Instant::now(),
             width,
             height,
             audio_enc,
