@@ -293,8 +293,8 @@ fn draw_capture_controls(ui: &mut egui::Ui, state: &mut UiState) {
                     );
                     ui.selectable_value(
                         &mut state.video_codec,
-                        VideoCodecPref::H264Sw,
-                        VideoCodecPref::H264Sw.label(),
+                        VideoCodecPref::H264Nvenc,
+                        VideoCodecPref::H264Nvenc.label(),
                     );
                     ui.selectable_value(
                         &mut state.video_codec,
@@ -303,8 +303,8 @@ fn draw_capture_controls(ui: &mut egui::Ui, state: &mut UiState) {
                     );
                     ui.selectable_value(
                         &mut state.video_codec,
-                        VideoCodecPref::H265Sw,
-                        VideoCodecPref::H265Sw.label(),
+                        VideoCodecPref::H265Nvenc,
+                        VideoCodecPref::H265Nvenc.label(),
                     );
                 });
         });

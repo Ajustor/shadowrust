@@ -110,71 +110,67 @@ fn open_video_encoder(
     fps: u32,
     time_base: Rational,
 ) -> Result<(encoder::Video, usize, String)> {
-    // Software fallback options (same as before the codec-pref feature).
-    // Used as the last-resort entry so the fallback is byte-for-byte identical
-    // to the pre-feature code path.
+    // Quality options for software encoders (CRF = quality-based, no bitrate cap).
     let sw_h264_opts: &[(&str, &str)] = &[("preset", "fast"), ("crf", "23")];
     let sw_h265_opts: &[(&str, &str)] = &[("preset", "fast"), ("crf", "28")];
-    // NVENC options: constqp mode via `cq` (simplest, works on all NVENC gens).
+    // NVENC: constqp quality mode via `cq`.
     let nvenc_h264_opts: &[(&str, &str)] = &[("preset", "p4"), ("cq", "23")];
     let nvenc_h265_opts: &[(&str, &str)] = &[("preset", "p4"), ("cq", "28")];
 
-    // Named-encoder candidates (try in order; first success wins).
-    let hw_candidates: &[(&str, &[(&str, &str)])] = match pref {
-        VideoCodecPref::H264Auto => &[("h264_nvenc", nvenc_h264_opts)],
-        VideoCodecPref::H265Auto => &[("hevc_nvenc", nvenc_h265_opts)],
-        VideoCodecPref::H264Sw | VideoCodecPref::H265Sw => &[],
-    };
-
-    // Software codec ID used for the final fallback (same as original code).
-    let sw_fallback: Option<(codec::Id, &[(&str, &str)])> = match pref {
-        VideoCodecPref::H264Auto | VideoCodecPref::H264Sw => {
-            Some((codec::Id::H264, sw_h264_opts))
+    match pref {
+        // ── Auto: use the system's default encoder for the codec ID ───────────
+        // This is identical to the original code path — whatever encoder the
+        // system has registered as default for H264/HEVC will be used.
+        VideoCodecPref::H264Auto => {
+            let codec = encoder::find(codec::Id::H264)
+                .context("H.264 encoder not found")?;
+            let name = codec_name(codec);
+            // libx264 uses CRF; if the system default happens to be NVENC, pass
+            // NVENC-appropriate options so it also works.
+            let opts = if name.contains("nvenc") { nvenc_h264_opts } else { sw_h264_opts };
+            try_open_codec(codec, opts, octx, width, height, fps, time_base)
+                .ok_or_else(|| anyhow::anyhow!("H.264 auto encoder ({name}) failed to open"))
+                .map(|(enc, idx)| (enc, idx, name))
         }
-        VideoCodecPref::H265Auto | VideoCodecPref::H265Sw => {
-            Some((codec::Id::HEVC, sw_h265_opts))
+        VideoCodecPref::H265Auto => {
+            let codec = encoder::find(codec::Id::HEVC)
+                .context("H.265 encoder not found")?;
+            let name = codec_name(codec);
+            let opts = if name.contains("nvenc") { nvenc_h265_opts } else { sw_h265_opts };
+            try_open_codec(codec, opts, octx, width, height, fps, time_base)
+                .ok_or_else(|| anyhow::anyhow!("H.265 auto encoder ({name}) failed to open"))
+                .map(|(enc, idx)| (enc, idx, name))
         }
-    };
 
-    // ── Try hardware encoders ─────────────────────────────────────────────────
-    for (name, opts_pairs) in hw_candidates {
-        if let Some((enc, idx)) = try_open_named(name, opts_pairs, octx, width, height, fps, time_base) {
-            return Ok((enc, idx, name.to_string()));
+        // ── NVENC: explicitly request GPU encoder, no software fallback ───────
+        VideoCodecPref::H264Nvenc => {
+            let codec = encoder::find_by_name("h264_nvenc")
+                .context("h264_nvenc not found — is an NVIDIA GPU available?")?;
+            try_open_codec(codec, nvenc_h264_opts, octx, width, height, fps, time_base)
+                .ok_or_else(|| anyhow::anyhow!("h264_nvenc failed to open (no NVENC GPU?)"))
+                .map(|(enc, idx)| (enc, idx, "h264_nvenc".to_string()))
+        }
+        VideoCodecPref::H265Nvenc => {
+            let codec = encoder::find_by_name("hevc_nvenc")
+                .context("hevc_nvenc not found — is an NVIDIA GPU available?")?;
+            try_open_codec(codec, nvenc_h265_opts, octx, width, height, fps, time_base)
+                .ok_or_else(|| anyhow::anyhow!("hevc_nvenc failed to open (no NVENC GPU?)"))
+                .map(|(enc, idx)| (enc, idx, "hevc_nvenc".to_string()))
         }
     }
+}
 
-    // ── Software fallback (by codec::Id — identical to pre-feature code) ──────
-    if let Some((id, opts_pairs)) = sw_fallback {
-        let codec = encoder::find(id).with_context(|| format!("no software encoder for {id:?}"))?;
-        let name = unsafe {
-            std::ffi::CStr::from_ptr((*codec.as_ptr()).name)
-                .to_str()
-                .unwrap_or("unknown")
-                .to_owned()
-        };
-        if let Some((enc, idx)) = try_open_codec(codec, opts_pairs, octx, width, height, fps, time_base) {
-            return Ok((enc, idx, name));
-        }
+/// Return the encoder name from an FFmpeg codec object (safe wrapper).
+fn codec_name(codec: codec::codec::Codec) -> String {
+    unsafe {
+        std::ffi::CStr::from_ptr((*codec.as_ptr()).name)
+            .to_str()
+            .unwrap_or("unknown")
+            .to_owned()
     }
-
-    anyhow::bail!("No video encoder available for {pref:?}")
 }
 
-/// Try to open a named encoder.  Returns `None` if not found or fails to open.
-fn try_open_named(
-    name: &str,
-    opts: &[(&str, &str)],
-    octx: &mut format::context::Output,
-    width: u32,
-    height: u32,
-    fps: u32,
-    time_base: Rational,
-) -> Option<(encoder::Video, usize)> {
-    let codec = encoder::find_by_name(name)?;
-    try_open_codec(codec, opts, octx, width, height, fps, time_base)
-}
-
-/// Try to open a codec object.  Returns `None` if setup or open fails.
+/// Try to open a codec.  Returns `None` if setup or open fails.
 fn try_open_codec(
     codec: codec::codec::Codec,
     opts: &[(&str, &str)],
@@ -198,7 +194,6 @@ fn try_open_codec(
 
     match ctx.open_with(dict) {
         Ok(enc) => {
-            // Add stream only after encoder opens successfully.
             match octx.add_stream(codec) {
                 Ok(mut vst) => {
                     vst.set_parameters(&enc);
@@ -212,12 +207,8 @@ fn try_open_codec(
             }
         }
         Err(e) => {
-            let name = unsafe {
-                std::ffi::CStr::from_ptr((*codec.as_ptr()).name)
-                    .to_str()
-                    .unwrap_or("?")
-            };
-            log::info!("{name} failed to open ({e}), trying next encoder");
+            let name = codec_name(codec);
+            log::info!("{name} failed to open ({e})");
             None
         }
     }

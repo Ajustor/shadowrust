@@ -3,29 +3,31 @@ use serde::{Deserialize, Serialize};
 /// Preferred video codec / encoder for recording.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum VideoCodecPref {
-    /// H.264 — try NVENC hardware first, then libx264 software (default).
+    /// H.264 — uses the system's default H.264 encoder (default).
+    /// Typically libx264 (software). Identical behavior to the original code.
     #[default]
     H264Auto,
-    /// H.264 — always use libx264 software encoder.
-    H264Sw,
-    /// H.265/HEVC — try NVENC hardware first, then libx265 software.
+    /// H.264 — force NVIDIA NVENC GPU encoder (requires NVIDIA GPU + drivers).
+    H264Nvenc,
+    /// H.265/HEVC — uses the system's default H.265 encoder.
+    /// ~40% smaller files at same visual quality.
     H265Auto,
-    /// H.265/HEVC — always use libx265 software encoder.
-    H265Sw,
+    /// H.265/HEVC — force NVIDIA NVENC GPU encoder.
+    H265Nvenc,
 }
 
 impl VideoCodecPref {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::H264Auto => "H.264 (auto HW)",
-            Self::H264Sw => "H.264 (logiciel)",
-            Self::H265Auto => "H.265 (auto HW)",
-            Self::H265Sw => "H.265 (logiciel)",
+            Self::H264Auto  => "H.264 (auto)",
+            Self::H264Nvenc => "H.264 NVENC (GPU)",
+            Self::H265Auto  => "H.265 (auto)",
+            Self::H265Nvenc => "H.265 NVENC (GPU)",
         }
     }
 
     pub fn is_hevc(&self) -> bool {
-        matches!(self, Self::H265Auto | Self::H265Sw)
+        matches!(self, Self::H265Auto | Self::H265Nvenc)
     }
 }
 
