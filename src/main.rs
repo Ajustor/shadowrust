@@ -132,15 +132,25 @@ mod dll_bundle {
                 let na = a.file_name().unwrap().to_string_lossy().to_lowercase();
                 let nb = b.file_name().unwrap().to_string_lossy().to_lowercase();
                 fn priority(name: &str) -> u8 {
-                    if name.starts_with("avutil") { 0 }
-                    else if name.starts_with("swresample") { 1 }
-                    else if name.starts_with("swscale") { 2 }
-                    else if name.starts_with("postproc") { 3 }
-                    else if name.starts_with("avcodec") { 4 }
-                    else if name.starts_with("avformat") { 5 }
-                    else if name.starts_with("avfilter") { 6 }
-                    else if name.starts_with("avdevice") { 7 }
-                    else { 8 }
+                    if name.starts_with("avutil") {
+                        0
+                    } else if name.starts_with("swresample") {
+                        1
+                    } else if name.starts_with("swscale") {
+                        2
+                    } else if name.starts_with("postproc") {
+                        3
+                    } else if name.starts_with("avcodec") {
+                        4
+                    } else if name.starts_with("avformat") {
+                        5
+                    } else if name.starts_with("avfilter") {
+                        6
+                    } else if name.starts_with("avdevice") {
+                        7
+                    } else {
+                        8
+                    }
                 }
                 priority(&na).cmp(&priority(&nb)).then(na.cmp(&nb))
             });
@@ -165,7 +175,10 @@ mod dll_bundle {
                     loaded += 1;
                 }
             }
-            plog!("[shadowrust] Loaded {loaded}/{} DLL(s) from {dir:?}", dll_paths.len());
+            plog!(
+                "[shadowrust] Loaded {loaded}/{} DLL(s) from {dir:?}",
+                dll_paths.len()
+            );
             loaded
         }
 
@@ -176,7 +189,10 @@ mod dll_bundle {
         // ── 1. libs\ next to the exe ─────────────────────────────────────────
         if let Some(ref exe_dir) = exe_dir {
             let libs_dir = exe_dir.join("libs");
-            dll_log!("[shadowrust] Checking libs\\ at {libs_dir:?} — exists: {}", libs_dir.is_dir());
+            dll_log!(
+                "[shadowrust] Checking libs\\ at {libs_dir:?} — exists: {}",
+                libs_dir.is_dir()
+            );
             if libs_dir.is_dir() {
                 // SetDllDirectoryW is called ONCE here so that:
                 //   a) LoadLibraryExW below can resolve transitive deps inside libs\
@@ -191,8 +207,7 @@ mod dll_bundle {
                 // that calls LoadLibrary with just a filename (including some
                 // delay-load implementations) finds our DLLs.
                 if let Ok(old_path) = std::env::var("PATH") {
-                    let new_path =
-                        format!("{};{}", libs_dir.display(), old_path);
+                    let new_path = format!("{};{}", libs_dir.display(), old_path);
                     // SAFETY: single-threaded at this point (before EventLoop)
                     unsafe { std::env::set_var("PATH", &new_path) };
                     dll_log!("[shadowrust] Prepended libs\\ to PATH");

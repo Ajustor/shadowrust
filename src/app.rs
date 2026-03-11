@@ -110,8 +110,7 @@ impl ApplicationHandler for App {
 
             #[allow(unsafe_code)]
             unsafe extern "system" {
-                fn GetModuleHandleW(lp_module_name: *const u16)
-                    -> *mut std::ffi::c_void;
+                fn GetModuleHandleW(lp_module_name: *const u16) -> *mut std::ffi::c_void;
                 fn LoadIconW(
                     h_instance: *mut std::ffi::c_void,
                     lp_icon_name: *const u16,
@@ -127,13 +126,10 @@ impl ApplicationHandler for App {
             const WM_SETICON: u32 = 0x0080;
 
             // Extract the Win32 HWND from the raw window handle.
-            let hwnd_opt = window
-                .window_handle()
-                .ok()
-                .and_then(|h| match h.as_raw() {
-                    RawWindowHandle::Win32(w) => Some(w.hwnd.get() as *mut std::ffi::c_void),
-                    _ => None,
-                });
+            let hwnd_opt = window.window_handle().ok().and_then(|h| match h.as_raw() {
+                RawWindowHandle::Win32(w) => Some(w.hwnd.get() as *mut std::ffi::c_void),
+                _ => None,
+            });
 
             if let Some(hwnd) = hwnd_opt {
                 // GetModuleHandleW(NULL) = handle of the current EXE.

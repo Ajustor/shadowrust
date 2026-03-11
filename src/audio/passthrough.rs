@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use ringbuf::HeapRb;
@@ -30,8 +30,17 @@ impl AudioPassthrough {
     pub fn start(input_device_name: Option<&str>, initial_volume: f32) -> Result<Self> {
         let host = cpal::default_host();
 
-        let input_device = find_input_device(&host, input_device_name)
-            .context("no audio input device available")?;
+        let input_device =
+            find_input_device(&host, input_device_name).with_context(
+                || match input_device_name {
+                    Some(hint) => format!(
+                        "Audio input device not found for hint '{hint}'. \
+                         Check that the capture card is connected and its audio \
+                         device name contains '{hint}'."
+                    ),
+                    None => "No default audio input device available".to_string(),
+                },
+            )?;
         log::info!(
             "Audio input device: {}",
             input_device.name().unwrap_or_default()
@@ -174,14 +183,14 @@ impl AudioPassthrough {
                         // of input frames and resample with nearest-neighbour.
                         let out_frames = out.len() / out_channels.max(1);
                         let ratio = in_rate as f64 / out_rate as f64;
-                        let in_frames_need =
-                            ((out_frames as f64 * ratio).ceil() as usize).max(1);
+                        let in_frames_need = ((out_frames as f64 * ratio).ceil() as usize).max(1);
                         let mut in_buf = vec![0.0f32; in_frames_need * in_channels];
                         let popped = pb_cons.pop_slice(&mut in_buf);
                         let avail = popped / in_channels.max(1);
 
                         for out_i in 0..out_frames {
-                            let in_i = ((out_i as f64 * ratio) as usize).min(avail.saturating_sub(1));
+                            let in_i =
+                                ((out_i as f64 * ratio) as usize).min(avail.saturating_sub(1));
                             let out_frame =
                                 &mut out[out_i * out_channels..(out_i + 1) * out_channels];
                             for (ch, s) in out_frame.iter_mut().enumerate() {
