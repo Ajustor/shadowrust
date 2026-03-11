@@ -28,7 +28,7 @@ impl Default for AppConfig {
             height: 1080,
             fps: 60,
             volume: 1.0,
-            record_path: "capture.mp4".to_string(),
+            record_path: "capture.mkv".to_string(),
         }
     }
 }
@@ -44,7 +44,7 @@ mod tests {
         assert_eq!(cfg.height, 1080);
         assert_eq!(cfg.fps, 60);
         assert!((cfg.volume - 1.0).abs() < f32::EPSILON);
-        assert_eq!(cfg.record_path, "capture.mp4");
+        assert_eq!(cfg.record_path, "capture.mkv");
         assert!(cfg.video_device.is_none());
         assert!(cfg.audio_device.is_none());
     }

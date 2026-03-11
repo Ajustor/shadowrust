@@ -40,11 +40,13 @@ impl Recorder {
         venc_ctx.set_format(ffmpeg_next::util::format::Pixel::YUV420P);
         venc_ctx.set_time_base(video_time_base);
         venc_ctx.set_frame_rate(Some(Rational::new(fps as i32, 1)));
-        venc_ctx.set_bit_rate(8_000_000);
+        // Do NOT set bit_rate — we use CRF mode (quality-based) which produces
+        // much smaller files than CBR at 8 Mbps.  Setting bit_rate would
+        // override CRF and force a constant-bitrate mode.
 
         let mut vopts = Dictionary::new();
-        vopts.set("preset", "ultrafast");
-        vopts.set("crf", "18");
+        vopts.set("preset", "fast");   // good compression, still real-time
+        vopts.set("crf", "23");         // visually lossless (FFmpeg default quality)
 
         let video_enc = venc_ctx.open_with(vopts).context("open H.264 encoder")?;
 
@@ -131,18 +133,10 @@ impl Recorder {
         .map_err(|e| log::warn!("SWR init failed ({e}) — recording without resampling"))
         .ok();
 
-        // ── Write file header ─────────────────────────────────────────────────
-        // For MP4: fragmented mode → file is recoverable after a crash.
-        // For MKV: already progressive by nature.
-        let is_mp4 = path.ends_with(".mp4") || path.ends_with(".MP4");
-        if is_mp4 {
-            let mut opts = ffmpeg_next::Dictionary::new();
-            opts.set("movflags", "frag_keyframe+empty_moov+default_base_moof");
-            octx.write_header_with(opts)
-                .context("write file header (fragmented MP4)")?;
-        } else {
-            octx.write_header().context("write file header")?;
-        }
+        // Write the file header.  The encode thread calls rec.finish() which
+        // always writes the trailer, so standard (non-fragmented) MP4 works
+        // correctly.  MKV is natively progressive; no special flags needed.
+        octx.write_header().context("write file header")?;
 
         Ok(Self {
             octx,
