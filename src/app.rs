@@ -102,11 +102,11 @@ impl ApplicationHandler for App {
         window.set_window_icon(window_icon);
 
         // On Windows: also set the taskbar icon by loading the icon directly
-        // from the EXE's embedded PE resource (ID=1, embedded by winres in
-        // build.rs).  The WM_SETICON message updates the button in the taskbar.
+        // On Windows: set the taskbar icon from the embedded PE resource (ID=1,
+        // embedded by winres in build.rs) via WM_SETICON.
         #[cfg(target_os = "windows")]
         {
-            use winit::platform::windows::WindowExtWindows;
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
             #[allow(unsafe_code)]
             unsafe extern "system" {
@@ -125,19 +125,32 @@ impl ApplicationHandler for App {
             }
 
             const WM_SETICON: u32 = 0x0080;
-            let hwnd = window.hwnd() as *mut std::ffi::c_void;
-            // GetModuleHandleW(NULL) = handle of the current EXE
-            let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
-            // MAKEINTRESOURCEW(1) = ID 1 (first/only icon embedded by winres)
-            let hicon = unsafe { LoadIconW(hinstance, 1 as *const u16) };
-            if !hicon.is_null() {
-                unsafe {
-                    SendMessageW(hwnd, WM_SETICON, 0 /* ICON_SMALL */, hicon as isize);
-                    SendMessageW(hwnd, WM_SETICON, 1 /* ICON_BIG */, hicon as isize);
+
+            // Extract the Win32 HWND from the raw window handle.
+            let hwnd_opt = window
+                .window_handle()
+                .ok()
+                .and_then(|h| match h.as_raw() {
+                    RawWindowHandle::Win32(w) => Some(w.hwnd.get() as *mut std::ffi::c_void),
+                    _ => None,
+                });
+
+            if let Some(hwnd) = hwnd_opt {
+                // GetModuleHandleW(NULL) = handle of the current EXE.
+                let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
+                // MAKEINTRESOURCEW(1) = resource ID 1 (first icon embedded by winres).
+                let hicon = unsafe { LoadIconW(hinstance, 1 as *const u16) };
+                if !hicon.is_null() {
+                    unsafe {
+                        SendMessageW(hwnd, WM_SETICON, 0 /* ICON_SMALL */, hicon as isize);
+                        SendMessageW(hwnd, WM_SETICON, 1 /* ICON_BIG */, hicon as isize);
+                    }
+                    log::info!("Windows taskbar icon set from embedded PE resource");
+                } else {
+                    log::warn!("LoadIconW(ID=1) returned NULL — check winres embeds the icon");
                 }
-                log::info!("Windows taskbar icon set from embedded PE resource");
             } else {
-                log::warn!("LoadIconW(ID=1) returned NULL — check that winres embedded the icon");
+                log::warn!("Could not get Win32 HWND — taskbar icon not set");
             }
         }
 

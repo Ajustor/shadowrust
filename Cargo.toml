@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 # Window + event loop
 winit = "0.30"
+raw-window-handle = "0.6"
 
 # GPU rendering (Vulkan / Metal / DX12 / WebGPU)
 wgpu = "22"

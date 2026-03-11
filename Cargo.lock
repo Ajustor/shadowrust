@@ -2815,6 +2815,7 @@ dependencies = [
  "nokhwa",
  "parking_lot",
  "pollster",
+ "raw-window-handle",
  "ringbuf",
  "serde",
  "serde_json",
