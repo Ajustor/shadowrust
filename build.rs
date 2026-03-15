@@ -12,9 +12,16 @@ fn main() {
     // Generate the application icon as an ICO file and embed it into the
     // Windows EXE via winres. On other platforms only the DLL bundle step runs.
     if target_os == "windows" {
+        // Decode assets/icon.png (committed source of truth) → ICO for PE embedding.
+        let icon_png = std::fs::read("assets/icon.png").expect("read assets/icon.png");
+        let img = image::load_from_memory(&icon_png)
+            .expect("decode assets/icon.png")
+            .into_rgba8();
+        let (w, h) = img.dimensions();
+        assert_eq!(w, h, "icon must be square");
         let ico_path = out_path.join("shadowrust.ico");
-        let rgba = render_icon(256);
-        std::fs::write(&ico_path, encode_ico(&rgba, 256)).expect("write shadowrust.ico");
+        std::fs::write(&ico_path, encode_ico(img.as_raw(), w)).expect("write shadowrust.ico");
+        println!("cargo:rerun-if-changed=assets/icon.png");
 
         // winres embeds the .ico into the PE binary (shows in Explorer / taskbar).
         let mut res = winres::WindowsResource::new();
@@ -217,102 +224,6 @@ fn write_empty_bundle(out_path: &Path) {
 }
 
 // ── Icon generation ───────────────────────────────────────────────────────────
-// Mirrors src/icon.rs — duplicated here so build.rs stays dependency-free.
-
-/// Render the ShadowRust icon as RGBA pixels (dark bg + play arrow + red dot).
-fn render_icon(size: u32) -> Vec<u8> {
-    let mut buf = vec![0u8; (size * size * 4) as usize];
-    let s = size as f32;
-    let cx = s * 0.5;
-    let cy = s * 0.5;
-    let outer_r = s * 0.47;
-
-    let tri_cx = cx - s * 0.025;
-    let tri_cy = cy;
-    let tri_r = s * 0.20;
-    let (tx1, ty1) = (tri_cx + tri_r, tri_cy);
-    let (tx2, ty2) = (tri_cx - tri_r * 0.65, tri_cy - tri_r * 0.88);
-    let (tx3, ty3) = (tri_cx - tri_r * 0.65, tri_cy + tri_r * 0.88);
-
-    let dot_cx = cx + s * 0.285;
-    let dot_cy = cy + s * 0.285;
-    let dot_r = s * 0.155;
-    let ring_inner = dot_r + s * 0.012;
-    let ring_outer = dot_r + s * 0.038;
-
-    for row in 0..size {
-        for col in 0..size {
-            let idx = ((row * size + col) * 4) as usize;
-            let x = col as f32 + 0.5;
-            let y = row as f32 + 0.5;
-            let dx = x - cx;
-            let dy = y - cy;
-            let d = (dx * dx + dy * dy).sqrt();
-
-            if d > outer_r {
-                continue;
-            }
-            let edge_aa = ((outer_r - d) / 1.5_f32).clamp(0.0, 1.0);
-            let t = (d / outer_r).clamp(0.0, 1.0);
-            let mut r = lrp(15.0, 30.0, t) as u8;
-            let mut g = lrp(20.0, 35.0, t) as u8;
-            let mut b = lrp(45.0, 72.0, t) as u8;
-
-            if in_tri(x, y, tx1, ty1, tx2, ty2, tx3, ty3) {
-                r = 240;
-                g = 240;
-                b = 240;
-            }
-
-            let dd = idist(x, y, dot_cx, dot_cy);
-            if dd >= ring_inner && dd <= ring_outer {
-                let rt = ((dd - ring_inner) / (ring_outer - ring_inner)).clamp(0.0, 1.0);
-                let ra = 1.0 - (rt * 2.0 - 1.0).abs();
-                r = lrp(r as f32, 255.0, ra * 0.9) as u8;
-                g = lrp(g as f32, 255.0, ra * 0.9) as u8;
-                b = lrp(b as f32, 255.0, ra * 0.9) as u8;
-            }
-            if dd <= dot_r {
-                let da = ((dot_r - dd) / 1.5_f32).clamp(0.0, 1.0);
-                let hl = (1.0
-                    - (idist(x, y, dot_cx - dot_r * 0.28, dot_cy - dot_r * 0.28) / (dot_r * 0.9))
-                        .clamp(0.0, 1.0))
-                    * 0.35;
-                r = lrp(r as f32, lrp(220.0, 255.0, hl), da) as u8;
-                g = lrp(g as f32, lrp(50.0, 100.0, hl), da) as u8;
-                b = lrp(b as f32, lrp(50.0, 80.0, hl), da) as u8;
-            }
-
-            buf[idx] = r;
-            buf[idx + 1] = g;
-            buf[idx + 2] = b;
-            buf[idx + 3] = (edge_aa * 255.0) as u8;
-        }
-    }
-    buf
-}
-
-fn idist(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
-    let dx = ax - bx;
-    let dy = ay - by;
-    (dx * dx + dy * dy).sqrt()
-}
-
-fn lrp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t.clamp(0.0, 1.0)
-}
-
-fn in_tri(px: f32, py: f32, v1x: f32, v1y: f32, v2x: f32, v2y: f32, v3x: f32, v3y: f32) -> bool {
-    let sg = |ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32| -> f32 {
-        (ax - cx) * (by - cy) - (bx - cx) * (ay - cy)
-    };
-    let d1 = sg(px, py, v1x, v1y, v2x, v2y);
-    let d2 = sg(px, py, v2x, v2y, v3x, v3y);
-    let d3 = sg(px, py, v3x, v3y, v1x, v1y);
-    let neg = (d1 < 0.0) || (d2 < 0.0) || (d3 < 0.0);
-    let pos = (d1 > 0.0) || (d2 > 0.0) || (d3 > 0.0);
-    !(neg && pos)
-}
 
 /// Encode RGBA pixels as a Windows ICO file (BMP-based, 32-bit BGRA).
 ///

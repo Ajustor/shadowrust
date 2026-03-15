@@ -83,9 +83,13 @@ impl ApplicationHandler for App {
 
         // Build the window icon BEFORE window creation so the taskbar picks
         // it up immediately (some Windows versions ignore post-creation updates).
-        // Use 128×128 for crisp HiDPI taskbar icons on both Linux and Windows.
-        let icon_rgba = crate::icon::make_icon_rgba(128);
-        let window_icon = winit::window::Icon::from_rgba(icon_rgba, 128, 128)
+        // Decoded from the embedded assets/icon.png at compile time.
+        const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
+        let icon_img = image::load_from_memory(ICON_PNG)
+            .expect("embedded icon.png is valid")
+            .into_rgba8();
+        let (icon_w, icon_h) = icon_img.dimensions();
+        let window_icon = winit::window::Icon::from_rgba(icon_img.into_raw(), icon_w, icon_h)
             .map_err(|e| log::warn!("Icon::from_rgba failed: {e}"))
             .ok();
 
